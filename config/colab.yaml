@@ -1,0 +1,39 @@
+# config/colab.yaml
+# =================
+# Override cho môi trường COLAB (GPU mạnh hơn, chạy Mistral 7B 4-bit)
+
+run_name: "snapx_colab_mistral7b_hybrid"
+
+dataset:
+  # Thường dùng cùng file với base; nếu bạn copy dataset sang Colab giữ nguyên đường dẫn tương đối.
+  path: "datasets/S-NAP_instructions.csv"
+
+semantics:
+  use_llm: true
+  model_name: "mistralai/Mistral-7B-Instruct-v0.3"
+  device: "cuda"
+  load_in_4bit: true
+  max_seq_len: 2048
+  mode: "logprob"
+
+  gen:
+    max_new_tokens: 64
+    temperature: 0.0
+    top_p: 1.0
+    do_sample: false
+
+hybrid:
+  # Có LLM → bật explain
+  enable_explanation: true
+  enable_graph_reasoner: true
+  enable_semantics_prior: true   # bật thêm nếu bạn có prior map
+  enable_guard: true
+
+eval:
+  # Colab: có thể dùng nhiều mẫu hơn nhưng vẫn phải cân thời gian
+  num_samples: 5000          # tuỳ ý: 2k, 5k, 10k...
+  ndcg_k: 5
+  measure_cost: true
+
+paths:
+  output_dir: "outputs/colab_runs"

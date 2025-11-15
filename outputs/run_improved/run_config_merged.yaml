@@ -1,0 +1,80 @@
+run_name: mistral7b_local_improved
+paths:
+  dataset_csv: datasets/S-NAP_instructions.csv
+  split_file: datasets/train_val_test.pkl
+  output_dir: outputs/run_improved
+data:
+  drop_end: true
+  invert_labels: false
+  min_activities: 2
+  load_limit: 150000
+sequence:
+  top_k: 10
+  fit_limit: 100000
+  markov:
+    order: 1
+    smoothing: 0.001
+    min_count: 2
+  prefix_tree:
+    max_depth: 8
+    min_count: 2
+  ensemble:
+    weights:
+      markov: 0.4
+      prefix_tree: 0.6
+    tie_breaker: prefix_tree
+semantics:
+  preload: true
+  model_name: mistralai/Mistral-7B-Instruct-v0.3
+  load_in_4bit: true
+  device_map: cuda
+  torch_dtype: float16
+  num_shots: 4
+  max_seq_len: 512
+  mode: logprob
+  do_sample: false
+prompts:
+  normalize_answer: true
+  inverted_prob: 0.1
+  variants:
+  - 'You are predicting the next activity in a process.
+
+    Use ONLY the Candidates list; return EXACTLY one activity.
+
+    '
+  inverted_variants:
+  - 'Select exactly one item strictly from Candidates.
+
+    Output only the activity name.
+
+    '
+guard:
+  enable: true
+  min_count: 1
+  min_ratio: 0.01
+  backoff_to_next_candidate: true
+eval:
+  num_samples: 1000
+  k_list:
+  - 1
+  - 5
+  metrics:
+  - accuracy_at_k
+  - macro_f1
+  - mrr
+  - ndcg_at_k
+logging:
+  level: INFO
+graph_reasoning:
+  enable: true
+  dfg:
+    min_count: 2
+    min_ratio: 0.01
+    smoothing: 0.0
+  priors:
+    hard_mask: true
+    prior_boost: 0.3
+semantics_prior:
+  enable: true
+  prior_type: S-DFD
+  prior_boost: 0.3

@@ -1,0 +1,16 @@
+accuracy: 0.78
+cpr: 14464.967868894797
+explain_metrics:
+  avg_explanation_length: 0.0
+  avg_usefulness_human: 0.0
+  guard_avg_blocked: 0.0
+  guard_used_rate: 0.0
+  reason_pass_rate: 0.0
+latency_ms:
+  avg_ms: 0.05160499858902767
+  p50_ms: 0.048999994760379195
+  p90_ms: 0.05239999445620924
+  p95_ms: 0.054360019566956935
+macro_f1: 0.7464646464646466
+mrr: 0.8766666666666667
+ndcg_at_k: 0.9083301655000041

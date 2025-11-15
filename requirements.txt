@@ -1,0 +1,21 @@
+# Core
+numpy>=1.24,<3
+pandas>=2.0,<3
+pyyaml>=6.0
+tqdm>=4.66
+
+# HF stack
+transformers>=4.43,<4.47
+datasets>=2.19,<3
+accelerate>=0.33,<0.35
+peft>=0.12,<0.14
+trl>=0.9,<0.11
+safetensors>=0.4.3
+sentencepiece>=0.1.99
+protobuf>=4.24.3
+bitsandbytes>=0.39.1
+pytest>=7.4,<8          
+
+# Torch: pip sẽ tự chọn bản CPU nếu không có CUDA.
+# Nếu bạn có CUDA, hãy cài bản phù hợp từ PyTorch site trước khi chạy.
+# torch==2.5.1+cu121

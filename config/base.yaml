@@ -1,0 +1,58 @@
+# base.yaml - Cấu hình cho Hybrid với Mistral-7B
+run_name: "snapx_local_hybrid_mistral7b"
+
+sequence:
+  enabled: true
+  alpha: 0.5
+  markov_order: 2
+  min_count: 1
+
+graph:
+  enabled: true
+  dfg:
+    min_count: 1
+    min_ratio: 0.0
+  reasoner:
+    hard_mask: false
+    boost_factor: 0.5
+    min_prob_keep: 0.0
+
+semantics:
+  use_llm: true
+  model_name: "mistralai/Mistral-7B-Instruct-v0.3"  # Sử dụng Mistral-7B
+  device: "cuda"
+  load_in_4bit: false
+  max_seq_len: 128
+  mode: "logprob"
+  gen:
+    max_new_tokens: 32
+    temperature: 0.0
+    top_p: 1.0
+    do_sample: false
+
+semantics_prior:
+  enabled: false
+  mode: "activity"
+  default_weight: 1.0
+  prior_map_path: null
+
+guard:
+  enabled: true
+  min_count: 1
+  min_ratio: 0.0
+  backoff_to_next_candidate: true
+
+hybrid:
+  top_k: 5
+  enable_graph_reasoner: true
+  enable_semantics_prior: true
+  enable_guard: true
+  enable_explanation: true
+
+eval:
+  num_samples: 50
+  ndcg_k: 5
+  measure_cost: true
+
+paths:
+  output_dir: "outputs"

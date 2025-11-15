@@ -1,0 +1,71 @@
+data:
+  drop_end: true
+  invert_labels: false
+  load_limit: null
+  min_activities: 2
+dataset:
+  case_id_col: model_id
+  label_col: next
+  path: datasets/S-NAP_instructions.csv
+  prefix_col: prefix
+  prefix_sep: ;
+  split_file: datasets/train_val_test.pkl
+eval:
+  measure_cost: true
+  ndcg_k: 5
+  num_samples: 1000
+graph:
+  dfg:
+    min_count: 1
+    min_ratio: 0.0
+  enabled: true
+  reasoner:
+    boost_factor: 0.5
+    hard_mask: false
+    min_prob_keep: 0.0
+guard:
+  activity_dataset: datasets/A-SAD_instructions.csv
+  backoff_to_next_candidate: true
+  enabled: true
+  min_count: 1
+  min_prefix_len: 1
+  min_ratio: 0.0
+  mode: soft
+  penalty_factor: 0.5
+  trace_dataset: datasets/T-SAD_instructions.csv
+  use_activity_guard: true
+  use_trace_guard: false
+hybrid:
+  enable_explanation: true
+  enable_graph_reasoner: true
+  enable_guard: true
+  enable_semantics_prior: true
+  top_k: 5
+paths:
+  output_dir: outputs/local_runs
+run_name: snapx_local_sequence_graph
+semantics:
+  device: cpu
+  gen:
+    do_sample: false
+    max_new_tokens: 32
+    temperature: 0.0
+    top_p: 1.0
+  load_in_4bit: false
+  max_seq_len: 512
+  mode: logprob
+  model_name: mistralai/Mistral-7B-Instruct-v0.3
+  use_llm: true
+semantics_prior:
+  ceil: 1.3
+  default_weight: 1.0
+  enabled: true
+  floor: 0.7
+  lambda_mix: 0.3
+  mode: pair
+  prior_map_path: datasets/sem_prior_pairs.json
+sequence:
+  alpha: 0.5
+  markov_order: 2
+  min_count: 1
+task: next_activity

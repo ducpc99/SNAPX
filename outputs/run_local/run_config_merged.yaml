@@ -1,0 +1,28 @@
+evaluation:
+  cost_performance:
+    enabled: true
+    latency_threshold: 2.0
+    memory_threshold: 500MB
+  explanation:
+    enabled: false
+  measure_latency: true
+  measure_memory: true
+  metrics:
+    accuracy: true
+    macro_f1: true
+    mrr: true
+    ndcg: true
+  num_samples: 1000
+graph:
+  enabled: false
+guard:
+  enabled: false
+hybrid:
+  enable_explanation: false
+semantics:
+  use_llm: false
+sequence:
+  alpha: 0.5
+  enabled: true
+  markov_order: 2
+  min_count: 1

@@ -1,0 +1,54 @@
+dataset:
+  path: datasets/S-NAP_instructions.csv
+  split_file: datasets/train_val_test.pkl
+eval:
+  measure_cost: true
+  ndcg_k: 5
+  num_samples: 50
+evaluation:
+  cost_performance:
+    enabled: true
+    latency_threshold: 2.0
+    memory_threshold: 500MB
+  explanation:
+    enabled: true
+  measure_latency: true
+  measure_memory: true
+  metrics:
+    accuracy: true
+    macro_f1: true
+    mrr: true
+    ndcg: true
+  num_samples: 50
+graph:
+  enabled: false
+guard:
+  enabled: false
+hybrid:
+  enable_explanation: true
+  enable_graph_reasoner: false
+  enable_guard: false
+  enable_semantics_prior: false
+  top_k: 5
+paths:
+  output_dir: outputs
+run_name: snapx_local_hybrid_tinyllama_eval
+semantics:
+  device: cuda
+  gen:
+    do_sample: false
+    max_new_tokens: 32
+    temperature: 0.0
+    top_p: 1.0
+  load_in_4bit: false
+  max_seq_len: 128
+  mode: logprob
+  model_name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  use_llm: false
+semantics_prior:
+  enabled: false
+sequence:
+  alpha: 0.5
+  enabled: true
+  markov_order: 2
+  min_count: 1

@@ -1,0 +1,15 @@
+# config/sem_prior_pair_low.yaml
+# ===============================
+# Semantics-Prior V2 (pair-based) - pha rất nhẹ (lambda_mix = 0.1)
+
+semantics_prior:
+  enabled: true
+  mode: "pair"                     # dùng prior theo cặp (prev,next)
+  default_weight: 1.0
+  lambda_mix: 0.3                  # pha nhẹ: 90% P_seq, 10% P_prior
+  floor: 0.7                       # kẹp weight thấp nhất
+  ceil: 1.3                        # kẹp weight cao nhất
+  prior_map_path: "datasets/sem_prior_pairs.json"
+
+hybrid:
+  enable_semantics_prior: true     # bật prior trong HybridSNAP

@@ -1,0 +1,15 @@
+guard:
+  enabled: true
+  min_count: 1
+  min_ratio: 0.0
+  backoff_to_next_candidate: true
+  mode: "soft"
+  use_activity_guard: true
+  use_trace_guard: false
+  penalty_factor: 0.5
+  min_prefix_len: 1
+  activity_dataset: "datasets/A-SAD_instructions.csv"
+  trace_dataset: "datasets/T-SAD_instructions.csv"
+
+hybrid:
+  enable_guard: true

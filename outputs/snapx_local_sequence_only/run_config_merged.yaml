@@ -1,0 +1,38 @@
+dataset:
+  path: datasets/S-NAP_instructions.csv
+  split_file: datasets/train_val_test.pkl
+eval:
+  measure_cost: true
+  ndcg_k: 5
+  num_samples: 200
+evaluation:
+  cost_performance:
+    enabled: true
+    latency_threshold: 2.0
+    memory_threshold: 500MB
+  explanation:
+    enabled: false
+  measure_latency: true
+  measure_memory: true
+  metrics:
+    accuracy: true
+    macro_f1: true
+    mrr: true
+    ndcg: true
+  num_samples: 200
+graph:
+  enabled: false
+guard:
+  enabled: false
+hybrid:
+  enable_explanation: false
+paths:
+  output_dir: outputs
+run_name: snapx_local_sequence_only
+semantics:
+  use_llm: false
+sequence:
+  alpha: 0.5
+  enabled: true
+  markov_order: 2
+  min_count: 1
