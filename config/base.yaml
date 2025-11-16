@@ -13,7 +13,7 @@ graph:
     min_count: 1
     min_ratio: 0.0
   reasoner:
-    hard_mask: false
+    hard_mask: true
     boost_factor: 0.5
     min_prob_keep: 0.0
 
@@ -21,17 +21,17 @@ semantics:
   use_llm: true
   model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" 
   device: "cuda"
-  load_in_4bit: false
+  load_in_4bit: true
   max_seq_len: 128
   mode: "logprob"
   gen:
     max_new_tokens: 32
     temperature: 0.0
     top_p: 1.0
-    do_sample: false
+    do_sample: true
 
 semantics_prior:
-  enabled: false
+  enabled: true
   mode: "activity"
   default_weight: 1.0
   prior_map_path: null
