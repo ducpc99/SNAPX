@@ -18,6 +18,9 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR / 'src'))  # Thêm đường dẫn 'src' vào sys.path
 
+# Kiểm tra sys.path
+print("Current sys.path:", sys.path)
+
 # Utils config
 from src.utils.config import load_config
 
