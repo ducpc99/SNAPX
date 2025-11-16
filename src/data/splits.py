@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import pandas as pd
 import pickle
 from pathlib import Path
@@ -174,7 +173,7 @@ def _bucket_trace_len(n: int) -> str:
 def _report_counts(series: pd.Series, all_buckets: List[str]) -> Dict[str, int]:
     cnt = series.value_counts().to_dict()
     return {b: int(cnt.get(b, 0)) for b in all_buckets}
-=======
+
 import pandas as pd
 import pickle
 from pathlib import Path
@@ -350,4 +349,3 @@ def _bucket_trace_len(n: int) -> str:
 def _report_counts(series: pd.Series, all_buckets: List[str]) -> Dict[str, int]:
     cnt = series.value_counts().to_dict()
     return {b: int(cnt.get(b, 0)) for b in all_buckets}
->>>>>>> 2e0d6c8d8370b52148eff5967d000b15d65ac3f3
