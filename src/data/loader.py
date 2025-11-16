@@ -119,6 +119,12 @@ def load_instructions_data(dataset_path: str = INSTRUCTIONS_CSV_PATH, limit: Opt
     
     return df
 
+def load_task_csv(file_path: str) -> pd.DataFrame:
+    """
+    Tải dữ liệu từ CSV và trả về dưới dạng DataFrame.
+    """
+    return pd.read_csv(file_path)
+
 def load_data(dataset_path: str = SNAP_CSV_PATH, data_type: str = "S-NAP", limit: Optional[int] = None, drop_end: bool = True) -> pd.DataFrame:
     """
     Tải dữ liệu từ CSV, xử lý dữ liệu tùy theo loại dữ liệu (S-NAP hoặc S-NAP_instructions).
