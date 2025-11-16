@@ -136,7 +136,6 @@ def load_data(dataset_path: str = SNAP_CSV_PATH, data_type: str = "S-NAP", limit
     else:
         raise ValueError("Invalid data type. Use 'S-NAP' or 'S-NAP_instructions'.")
 
-=======
 import pandas as pd
 import ast
 import hashlib
@@ -274,4 +273,5 @@ def load_data(dataset_path: str = SNAP_CSV_PATH, data_type: str = "S-NAP", limit
         return load_instructions_data(dataset_path, limit)
     else:
         raise ValueError("Invalid data type. Use 'S-NAP' or 'S-NAP_instructions'.")
+
 
