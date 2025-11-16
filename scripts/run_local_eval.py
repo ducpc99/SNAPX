@@ -371,7 +371,7 @@ def main() -> None:
         if use_llm:
             print("🧠  Khởi tạo SemanticsLLM (có thể tốn thời gian / VRAM)...")
             runtime_cfg = RuntimeConfig(
-                model_name=sem_cfg.get("model_name", "mistralai/Mistral-7B-Instruct-v0.3"),
+                model_name=sem_cfg.get("model_name", "microsoft/Phi-3-mini-4k-instruct"),
                 max_seq_len=sem_cfg.get("max_seq_len", 2048),
                 load_in_4bit=sem_cfg.get("load_in_4bit", False),
                 device=sem_cfg.get("device", "auto"),
