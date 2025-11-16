@@ -22,7 +22,7 @@ sys.path.append(str(ROOT_DIR))
 from src.utils.config import load_config
 
 # Loader chuẩn (S-NAP, A-SAD, T-SAD + split train/val/test)
-from src.data.loader import load_task_csv
+from data.loader import load_task_csv
 
 # Core models
 from src.sequence.ensemble import SequenceEnsemble
@@ -186,6 +186,12 @@ def main() -> None:
         "--save-merged-cfg",
         action="store_true",
         help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm",
+    )
+    parser.add_argument(
+        "--split-file",
+        type=str,
+        required=True,
+        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)"
     )
     args = parser.parse_args()
 
@@ -371,7 +377,7 @@ def main() -> None:
         if use_llm:
             print("🧠  Khởi tạo SemanticsLLM (có thể tốn thời gian / VRAM)...")
             runtime_cfg = RuntimeConfig(
-                model_name=sem_cfg.get("model_name", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"),
+                model_name=sem_cfg.get("model_name", "microsoft/Phi-3-mini-4k-instruct"),
                 max_seq_len=sem_cfg.get("max_seq_len", 2048),
                 load_in_4bit=sem_cfg.get("load_in_4bit", False),
                 device=sem_cfg.get("device", "auto"),
