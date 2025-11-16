@@ -14,7 +14,7 @@ safetensors>=0.4.3
 sentencepiece>=0.1.99
 protobuf>=4.24.3
 bitsandbytes>=0.39.1
-pytest>=7.4,<8          
+pytest>=7.4,<8
 
 # Torch: pip sẽ tự chọn bản CPU nếu không có CUDA.
 # Nếu bạn có CUDA, hãy cài bản phù hợp từ PyTorch site trước khi chạy.

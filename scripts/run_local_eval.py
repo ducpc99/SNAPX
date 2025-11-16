@@ -18,6 +18,9 @@ import yaml
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
+# Kiểm tra sys.path
+print("Current sys.path:", sys.path)
+
 # Utils config
 from src.utils.config import load_config
 
@@ -186,6 +189,12 @@ def main() -> None:
         "--save-merged-cfg",
         action="store_true",
         help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm",
+    )
+    parser.add_argument(
+        "--split-file",
+        type=str,
+        required=True,
+        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)"
     )
     args = parser.parse_args()
 
@@ -371,7 +380,7 @@ def main() -> None:
         if use_llm:
             print("🧠  Khởi tạo SemanticsLLM (có thể tốn thời gian / VRAM)...")
             runtime_cfg = RuntimeConfig(
-                model_name=sem_cfg.get("model_name", "mistralai/Mistral-7B-Instruct-v0.3"),
+                model_name=sem_cfg.get("model_name", "microsoft/Phi-3-mini-4k-instruct"),
                 max_seq_len=sem_cfg.get("max_seq_len", 2048),
                 load_in_4bit=sem_cfg.get("load_in_4bit", False),
                 device=sem_cfg.get("device", "auto"),

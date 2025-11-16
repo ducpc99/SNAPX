@@ -20,7 +20,7 @@ import json
 
 import pandas as pd
 
-from src.data.loader import load_task_csv
+from data.loader import load_task_csv
 
 
 # ------------------------------------------------
