@@ -22,7 +22,7 @@ sys.path.append(str(ROOT_DIR / 'src'))  # Thêm đường dẫn 'src' vào sys.p
 print("Current sys.path:", sys.path)
 
 # Utils config
-#from src.utils.config import load_config
+from src.utils.config import load_config
 
 # Loader chuẩn (S-NAP, A-SAD, T-SAD + split train/val/test)
 from src.data.loader import load_task_csv
