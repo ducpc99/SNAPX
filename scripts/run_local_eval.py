@@ -14,15 +14,15 @@ from typing import Any, Dict, List
 
 import yaml
 
-# Cho phép import src.* dù script nằm ngoài thư mục src
+# Đảm bảo thư mục src nằm trong sys.path để import đúng các module từ src
 ROOT_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT_DIR / 'src'))
+sys.path.append(str(ROOT_DIR / 'src'))  # Thêm đường dẫn 'src' vào sys.path
 
 # Utils config
 from src.utils.config import load_config
 
 # Loader chuẩn (S-NAP, A-SAD, T-SAD + split train/val/test)
-from data.loader import load_task_csv
+from src.data.loader import load_task_csv
 
 # Core models
 from src.sequence.ensemble import SequenceEnsemble
