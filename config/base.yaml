@@ -1,5 +1,5 @@
-# base.yaml - Cấu hình cho Hybrid với Phi-3-mini
-run_name: "snapx_local_hybrid_Phi-3-mini"
+# base.yaml - Cấu hình cho Hybrid với TinyLlama
+run_name: "snapx_local_hybrid_TinyLlama"
 
 sequence:
   enabled: true
