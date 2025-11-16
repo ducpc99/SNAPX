@@ -1,5 +1,5 @@
-# base.yaml - Cấu hình cho Hybrid với Mistral-7B
-run_name: "snapx_local_hybrid_mistral7b"
+# base.yaml - Cấu hình cho Hybrid với Phi-3-mini
+run_name: "snapx_local_hybrid_Phi-3-mini"
 
 sequence:
   enabled: true
@@ -19,7 +19,7 @@ graph:
 
 semantics:
   use_llm: true
-  model_name: "mistralai/Mistral-7B-Instruct-v0.3"  # Sử dụng Mistral-7B
+  model_name: "microsoft/Phi-3-mini-4k-instruct" 
   device: "cuda"
   load_in_4bit: false
   max_seq_len: 128
