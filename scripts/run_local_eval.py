@@ -16,7 +16,7 @@ import yaml
 
 # Cho phép import src.* dù script nằm ngoài thư mục src
 ROOT_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT_DIR))
+sys.path.append(str(ROOT_DIR / 'src'))
 
 # Utils config
 from src.utils.config import load_config
