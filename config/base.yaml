@@ -4,6 +4,7 @@ run_name: "snapx_local_hybrid_TinyLlama"
 task: next_activity
 dataset: None  # Dữ liệu mặc định, có thể thay đổi trong các cấu hình con
 
+# Đường dẫn đến file phân chia train/val/test
 split_file: "datasets/snap_train_val_test.pkl"
 
 # Cấu hình cho Sequence-only
@@ -13,6 +14,7 @@ sequence:
   markov_order: 2
   min_count: 1
 
+# Cấu hình cho đồ thị (Graph)
 graph:
   enabled: true
   dfg:
@@ -23,6 +25,7 @@ graph:
     boost_factor: 0.5
     min_prob_keep: 0.0
 
+# Cấu hình cho semantics
 semantics:
   use_llm: true
   model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -31,18 +34,21 @@ semantics:
   max_seq_len: 128
   mode: "logprob"
 
+# Cấu hình cho Semantics Prior
 semantics_prior:
   enabled: true
   mode: "activity"
   default_weight: 1.0
   prior_map_path: null
 
+# Cấu hình cho Guard (bảo vệ)
 guard:
   enabled: true
   min_count: 1
   min_ratio: 0.0
   backoff_to_next_candidate: true
 
+# Cấu hình cho Hybrid (Sequence + Graph + LLM)
 hybrid:
   top_k: 5
   enable_graph_reasoner: true
@@ -50,28 +56,29 @@ hybrid:
   enable_guard: true
   enable_explanation: true
 
+# Cấu hình cho phần đánh giá (Eval)
 eval:
   num_samples: 50
   ndcg_k: 5
   measure_cost: true
 
+# Đường dẫn tới thư mục output
 paths:
   output_dir: "outputs"
 
-# Cấu hình cho mỗi trường hợp (S-NAP, S-NAP_instructions, etc.)
+# Cấu hình cho mỗi trường hợp dữ liệu
 datasets:
   snap:
-    path: "/kaggle/input/datapm/S-NAP.csv"  # Dữ liệu gốc
+    path: "/kaggle/input/datapm/S-NAP.csv"  # Dữ liệu gốc (S-NAP.csv)
     label_col: next
     prefix_col: prefix
-    prefix_sep: ;
+    prefix_sep: ";"
     output_dir: outputs
   instructions:
-    path: "/kaggle/input/datapm/S-NAP_instructions.csv"  # Dữ liệu IT
+    path: "/kaggle/input/datapm/S-NAP_instructions.csv"  # Dữ liệu IT (S-NAP_instructions.csv)
     label_col: next
     prefix_col: prefix
-    prefix_sep: ;
+    prefix_sep: ";"
     output_dir: outputs
-  # Thêm các trường hợp khác nếu cần
-  snap_train_val_test: "/kaggle/input/datapm/snap_train_val_test.pkl"
-  instructions_train_val_test: "/kaggle/input/datapm/instructions_train_val_test.pkl"
+  snap_train_val_test: "/kaggle/input/datapm/snap_train_val_test.pkl"  # File phân chia cho S-NAP
+  instructions_train_val_test: "/kaggle/input/datapm/instructions_train_val_test.pkl"  # File phân chia cho S-NAP_instructions
