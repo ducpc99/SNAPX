@@ -1,20 +1,40 @@
-# base.yaml - Cấu hình chung cho tất cả các trường hợp
+# base.yaml – Cấu hình chung cho S-NAPX (local + Kaggle)
 
 run_name: "snapx_local_hybrid_TinyLlama"
 task: next_activity
-dataset: None  # Dữ liệu mặc định, có thể thay đổi trong các cấu hình con
 
-# Đường dẫn đến file phân chia train/val/test
-split_file: "datasets/snap_train_val_test.pkl"
+# -----------------------------
+# Dataset (bắt buộc cho run_local_eval.py)
+# -----------------------------
+dataset:
+  path: "datasets/S-NAP.csv"              # đã được symlink trong snapx.py
+  split_file: "datasets/snap_train_val_test.pkl"
+  case_id_col: "model_id"
+  prefix_col: "prefix"
+  label_col: "next"
+  prefix_sep: ";"
 
-# Cấu hình cho Sequence-only
+# -----------------------------
+# Tiền xử lý / lọc dữ liệu
+# -----------------------------
+data:
+  drop_end: true          # bỏ các next = [END]/END/...
+  invert_labels: false
+  min_activities: 2
+  load_limit: 20000       # đồng bộ với LOAD_LIMIT trong notebook
+
+# -----------------------------
+# Sequence-only (Markov ensemble)
+# -----------------------------
 sequence:
   enabled: true
   alpha: 0.5
   markov_order: 2
   min_count: 1
 
-# Cấu hình cho đồ thị (Graph)
+# -----------------------------
+# Graph (DFG + Reasoner)
+# -----------------------------
 graph:
   enabled: true
   dfg:
@@ -25,30 +45,50 @@ graph:
     boost_factor: 0.5
     min_prob_keep: 0.0
 
-# Cấu hình cho semantics
+# -----------------------------
+# Semantics (LLM)
+# -----------------------------
 semantics:
-  use_llm: true
+  use_llm: true                           # sẽ bị override thành False trong kaggle_seq_only.yaml
   model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  device: "cuda"
+  device: "auto"                          # để Kaggle tự chọn GPU nếu có
   load_in_4bit: true
   max_seq_len: 128
   mode: "logprob"
+  gen:
+    max_new_tokens: 16
+    temperature: 0.0
+    top_p: 1.0
+    do_sample: false
 
-# Cấu hình cho Semantics Prior
+# -----------------------------
+# Semantics Prior
+# -----------------------------
 semantics_prior:
   enabled: true
   mode: "activity"
   default_weight: 1.0
+  lambda_mix: 0.2
+  floor: 0.7
+  ceil: 1.3
   prior_map_path: null
 
-# Cấu hình cho Guard (bảo vệ)
+# -----------------------------
+# Guard
+# -----------------------------
 guard:
   enabled: true
-  min_count: 1
-  min_ratio: 0.0
-  backoff_to_next_candidate: true
+  mode: "soft"
+  use_activity_guard: true
+  use_trace_guard: false
+  penalty_factor: 0.5
+  min_prefix_len: 1
+  activity_dataset: null
+  trace_dataset: null
 
-# Cấu hình cho Hybrid (Sequence + Graph + LLM)
+# -----------------------------
+# Hybrid controller
+# -----------------------------
 hybrid:
   top_k: 5
   enable_graph_reasoner: true
@@ -56,29 +96,16 @@ hybrid:
   enable_guard: true
   enable_explanation: true
 
-# Cấu hình cho phần đánh giá (Eval)
+# -----------------------------
+# Eval config
+# -----------------------------
 eval:
   num_samples: 50
   ndcg_k: 5
   measure_cost: true
 
-# Đường dẫn tới thư mục output
+# -----------------------------
+# Paths
+# -----------------------------
 paths:
   output_dir: "outputs"
-
-# Cấu hình cho mỗi trường hợp dữ liệu
-datasets:
-  snap:
-    path: "/kaggle/input/datapm/S-NAP.csv"  # Dữ liệu gốc (S-NAP.csv)
-    label_col: next
-    prefix_col: prefix
-    prefix_sep: ";"
-    output_dir: outputs
-  instructions:
-    path: "/kaggle/input/datapm/S-NAP_instructions.csv"  # Dữ liệu IT (S-NAP_instructions.csv)
-    label_col: next
-    prefix_col: prefix
-    prefix_sep: ";"
-    output_dir: outputs
-  snap_train_val_test: "/kaggle/input/datapm/snap_train_val_test.pkl"  # File phân chia cho S-NAP
-  instructions_train_val_test: "/kaggle/input/datapm/instructions_train_val_test.pkl"  # File phân chia cho S-NAP_instructions
