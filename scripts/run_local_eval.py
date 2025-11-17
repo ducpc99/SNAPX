@@ -165,55 +165,63 @@ def _print_cfg_summary(cfg: Dict[str, Any]) -> None:
 # Main
 # =========================
 def main() -> None:
+    # Khởi tạo parser cho các tham số dòng lệnh
     parser = argparse.ArgumentParser(description="Run Local Evaluation for S-NAPX Hybrid")
+    
+    # Tham số cho file cấu hình (có thể truyền nhiều file YAML)
     parser.add_argument(
-        "--config",
-        "-c",
-        type=str,
-        nargs="+",
-        required=True,
-        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)",
+        "--config", "-c",
+        type=str, nargs="+", required=True,
+        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)"
     )
+    
+    # Tham số để bật chế độ theo dõi GPU/VRAM
     parser.add_argument(
-        "--monitor-gpu",
-        action="store_true",
-        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy",
+        "--monitor-gpu", action="store_true",
+        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy"
     )
+    
+    # Tham số chu kỳ in trạng thái GPU
     parser.add_argument(
-        "--gpu-interval",
-        type=float,
-        default=2.0,
-        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu",
+        "--gpu-interval", type=float, default=2.0,
+        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu"
     )
+    
+    # Tham số để lưu cấu hình đã gộp vào thư mục output
     parser.add_argument(
-        "--save-merged-cfg",
-        action="store_true",
-        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm",
+        "--save-merged-cfg", action="store_true",
+        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm"
     )
+    
+    # Tham số đường dẫn tới file phân chia train/val/test
     parser.add_argument(
-        "--split-file",
-        type=str,
-        required=True,
+        "--split-file", type=str, required=True,
         help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)"
     )
+    
+    # Phân tích các tham số dòng lệnh
     args = parser.parse_args()
 
+    # Đọc các file cấu hình từ tham số --config
     cfg_paths = [str(Path(p)) for p in args.config]
 
-    # 1) Load & merge YAML (dùng utils/config.py)
+    # 1) Load & merge các file YAML cấu hình
     cfg = load_config(cfg_paths)
 
-    # 2) Chuẩn bị output dir
-    paths_cfg = cfg.get("paths", {}) or {}
-    run_name = cfg.get("run_name", "run_local")
-    base_output = Path(paths_cfg.get("output_dir", "outputs"))
-    out_dir = base_output / run_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # 2) Chuẩn bị thư mục output
+    paths_cfg = cfg.get("paths", {})
+    run_name = cfg.get("run_name", "run_local")  # Tên chạy, mặc định là "run_local"
+    base_output = Path(paths_cfg.get("output_dir", "outputs"))  # Đường dẫn đến thư mục output
+    out_dir = base_output / run_name  # Tạo thư mục cho mỗi lần chạy
+    out_dir.mkdir(parents=True, exist_ok=True)  # Tạo thư mục nếu chưa có
 
+    # In thông báo bắt đầu chạy mô hình
     print("\n🚀  Bắt đầu chạy S-NAPX Hybrid (Local Mode)...\n")
+    
+    # In ra cấu hình tóm tắt (để kiểm tra trước khi chạy)
     _print_cfg_summary(cfg)
-
-    # (tuỳ chọn) Lưu bản config đã merge để reproducible
+    
+    # Lưu bản cấu hình đã gộp nếu tham số --save-merged-cfg được bật
     if args.save_merged_cfg:
         merged_cfg_path = out_dir / "run_config_merged.yaml"
         try:
