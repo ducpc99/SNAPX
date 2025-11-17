@@ -1,6 +1,12 @@
-# base.yaml - Cấu hình cho Hybrid với TinyLlama
-run_name: "snapx_local_hybrid_TinyLlama"
+# base.yaml - Cấu hình chung cho tất cả các trường hợp
 
+run_name: "snapx_local_hybrid_TinyLlama"
+task: next_activity
+dataset: None  # Dữ liệu mặc định, có thể thay đổi trong các cấu hình con
+
+split_file: "datasets/snap_train_val_test.pkl"
+
+# Cấu hình cho Sequence-only
 sequence:
   enabled: true
   alpha: 0.5
@@ -19,16 +25,11 @@ graph:
 
 semantics:
   use_llm: true
-  model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" 
+  model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   device: "cuda"
   load_in_4bit: true
   max_seq_len: 128
   mode: "logprob"
-  gen:
-    max_new_tokens: 32
-    temperature: 0.0
-    top_p: 1.0
-    do_sample: true
 
 semantics_prior:
   enabled: true
@@ -56,3 +57,21 @@ eval:
 
 paths:
   output_dir: "outputs"
+
+# Cấu hình cho mỗi trường hợp (S-NAP, S-NAP_instructions, etc.)
+datasets:
+  snap:
+    path: "/kaggle/input/datapm/S-NAP.csv"  # Dữ liệu gốc
+    label_col: next
+    prefix_col: prefix
+    prefix_sep: ;
+    output_dir: outputs
+  instructions:
+    path: "/kaggle/input/datapm/S-NAP_instructions.csv"  # Dữ liệu IT
+    label_col: next
+    prefix_col: prefix
+    prefix_sep: ;
+    output_dir: outputs
+  # Thêm các trường hợp khác nếu cần
+  snap_train_val_test: "/kaggle/input/datapm/snap_train_val_test.pkl"
+  instructions_train_val_test: "/kaggle/input/datapm/instructions_train_val_test.pkl"
