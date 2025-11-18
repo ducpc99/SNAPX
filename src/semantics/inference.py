@@ -4,7 +4,7 @@
 SemanticsLLM
 ============
 
-Lớp bọc LLM cho Semantics Layer của S-NAP.
+Lớp bọc LLM cho Semantics Layer của S-NAPX.
 
 Nhiệm vụ
 --------
@@ -12,9 +12,10 @@ Nhiệm vụ
 - Dùng PromptPool để build prompt prediction:
     + template snap_predict_strict_v1.
     + format với {activities}, {candidates}, {prefix}.
+- (Tuỳ chọn) chèn thêm few-shot IT từ InstructionMemory vào đầu prompt.
 - Cung cấp 2 mode chọn nhãn:
     • "logprob": tính log-xác suất cho từng candidate, chọn max.
-    • "generate": để model sinh text, sau đó parse nhãn từ output.
+    • "generate": để LLM tự sinh, rồi parse nhãn.
 - Cung cấp hàm generate_text(prompt) để dùng cho explain.
 """
 
@@ -27,16 +28,22 @@ import math
 
 try:
     import torch
+    import torch.nn.functional as F
     from transformers import AutoModelForCausalLM, AutoTokenizer
-except ImportError:  # pragma: no cover - môi trường chưa cài transformers/torch
+except ImportError:  # pragma: no cover
     torch = None
+    F = None
     AutoModelForCausalLM = None
     AutoTokenizer = None
 
 from .prompt_pool import PromptPool
 from .types import PromptTemplate
+from .instruction_memory import InstructionMemory, ITExample
 
 
+# ----------------------------------------------------------------------
+# Dataclass cấu hình
+# ----------------------------------------------------------------------
 @dataclass
 class RuntimeConfig:
     """Cấu hình runtime cho LLM."""
@@ -57,8 +64,11 @@ class GenConfig:
     do_sample: bool = False
 
 
+# ----------------------------------------------------------------------
+# SemanticsLLM
+# ----------------------------------------------------------------------
 class SemanticsLLM:
-    """Lớp wrap để gọi LLM theo chuẩn của S-NAP."""
+    """Lớp wrap để gọi LLM theo chuẩn của S-NAPX."""
 
     def __init__(
         self,
@@ -66,6 +76,10 @@ class SemanticsLLM:
         runtime_cfg: RuntimeConfig,
         gen_cfg: Optional[GenConfig] = None,
         mode: str = "logprob",
+        # IT few-shot
+        instruction_memory: Optional[InstructionMemory] = None,
+        use_it_fewshot: bool = False,
+        it_num_shots: int = 3,
     ) -> None:
         """
         Parameters
@@ -80,6 +94,12 @@ class SemanticsLLM:
             Cách chọn nhãn:
             - "logprob": tính logprob từng candidate.
             - "generate": model sinh text rồi parse nhãn.
+        instruction_memory:
+            Bộ nhớ IT (S-NAP_instructions) dùng để lấy few-shot ví dụ.
+        use_it_fewshot:
+            Nếu True và có instruction_memory → chèn few-shot IT vào đầu prompt.
+        it_num_shots:
+            Số lượng ví dụ IT tối đa lấy cho mỗi prefix.
         """
         self.prompt_pool = prompt_pool
         self.runtime_cfg = runtime_cfg
@@ -88,97 +108,63 @@ class SemanticsLLM:
             raise ValueError("mode phải là 'logprob' hoặc 'generate'")
         self.mode = mode
 
+        self.instruction_memory = instruction_memory
+        self.use_it_fewshot = use_it_fewshot
+        self.it_num_shots = max(0, int(it_num_shots))
+
         if torch is None or AutoModelForCausalLM is None or AutoTokenizer is None:
             raise ImportError(
-                "SemanticsLLM cần 'torch' và 'transformers'. "
-                "Hãy cài đặt: pip install torch transformers"
+                "Cần cài đặt transformers + torch để dùng SemanticsLLM "
+                "(pip install transformers torch)."
             )
 
-        # Thiết lập device
-        if runtime_cfg.device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = runtime_cfg.device
+        # Resolve device
+        self.device = self._resolve_device(runtime_cfg.device)
 
-        # ----- Load tokenizer -----
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            runtime_cfg.model_name,
-            use_fast=True,
-        )
-        # Nếu model không có pad_token, dùng eos_token
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(runtime_cfg.model_name)
         if self.tokenizer.pad_token is None and self.tokenizer.eos_token is not None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
 
-        # ----- Load model với chiến lược nhiều tầng -----
-        self.model = self._load_model_with_fallback()
+        # Load model (có hỗ trợ 4bit đơn giản)
+        if runtime_cfg.load_in_4bit:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                runtime_cfg.model_name,
+                device_map={"": str(self.device)},
+                load_in_4bit=True,
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(runtime_cfg.model_name)
+            self.model.to(self.device)
 
         self.model.eval()
 
     # ------------------------------------------------------------------
-    # Chiến lược load model: 4bit + GPU -> fallback CPU nếu lỗi
+    # Utils
     # ------------------------------------------------------------------
-    def _load_model_with_fallback(self):
-        """
-        Thử lần lượt:
-        1) Nếu load_in_4bit=True và có GPU: load 4bit + device_map='auto'.
-        2) Nếu fail (thiếu VRAM / cấu hình bitsandbytes):
-            -> in cảnh báo, fallback về CPU full-precision.
-        """
-        model_name = self.runtime_cfg.model_name
+    def _resolve_device(self, device_str: str) -> "torch.device":
+        """Chuyển string sang torch.device, có hỗ trợ 'auto'."""
+        if not torch.cuda.is_available():
+            return torch.device("cpu")
 
-        # Ưu tiên: 4bit + GPU (nếu được yêu cầu và có CUDA)
-        if self.runtime_cfg.load_in_4bit and self.device == "cuda":
-            model_kwargs: Dict[str, Any] = {}
-            try:
-                from transformers import BitsAndBytesConfig  # type: ignore
+        if device_str == "auto":
+            return torch.device("cuda")
 
-                quant_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_quant_type="nf4",
-                )
-                model_kwargs["quantization_config"] = quant_config
-                model_kwargs["device_map"] = "auto"
-
-                print(
-                    f"[SemanticsLLM] Đang thử load model 4-bit trên GPU: {model_name} "
-                    f"(device_map=auto)..."
-                )
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    **model_kwargs,
-                )
-                # Với device_map="auto" thì không cần .to(...)
-                print("[SemanticsLLM] Load 4-bit GPU thành công.")
-                return model
-
-            except Exception as e:
-                # Nếu lỗi (thiếu VRAM, cấu hình offload, bitsandbytes, ...) -> fallback CPU
-                print(
-                    f"[SemanticsLLM] Không load được model 4-bit trên GPU, "
-                    f"fallback CPU fp32. Lý do: {e}"
-                )
-
-        # Fallback: CPU full-precision (hoặc GPU nếu device='cuda' nhưng không 4bit)
-        print(f"[SemanticsLLM] Đang load model full-precision trên device={self.device}: {model_name}")
         try:
-            model = AutoModelForCausalLM.from_pretrained(model_name)
-            model.to(self.device)
-            print("[SemanticsLLM] Load full-precision thành công.")
-            return model
-        except Exception as e:
-            # Nếu cả hai cách đều fail -> raise để bên ngoài xử lý
-            raise RuntimeError(f"Không thể load model {model_name} trên device={self.device}: {e}")
+            return torch.device(device_str)
+        except Exception:
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ------------------------------------------------------------------
-    # API chính: chọn nhãn từ top-k candidate
+    # Core API: predict_from_candidates
     # ------------------------------------------------------------------
     def predict_from_candidates(
         self,
         activities: Sequence[str],
         prefix: Sequence[str],
         candidates: List[str],
+        model_id: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Chọn 1 nhãn từ danh sách candidates.
@@ -191,6 +177,8 @@ class SemanticsLLM:
             Chuỗi hoạt động đã xảy ra.
         candidates:
             Danh sách top-k candidate từ sequence/graph layer.
+        model_id:
+            (tuỳ chọn) id process/model, dùng để ưu tiên ví dụ IT cùng domain.
 
         Returns
         -------
@@ -203,30 +191,44 @@ class SemanticsLLM:
             - 'mode': 'logprob' hoặc 'generate'.
             - 'candidate_logprobs': dict[candidate, logprob] (mode=logprob).
             - 'raw_output': output gốc khi generate (mode=generate).
+            - 'it_fewshot_used': bool.
+            - 'it_fewshot_count': int.
         """
         if not candidates:
             return "", {
                 "error": "empty_candidates",
                 "mode": self.mode,
+                "it_fewshot_used": False,
+                "it_fewshot_count": 0,
             }
 
         template: PromptTemplate = self.prompt_pool.get_prediction_template()
+
+        # Lấy ví dụ IT (nếu bật use_it_fewshot)
+        it_examples: List[ITExample] = []
+        if self.use_it_fewshot and self.instruction_memory is not None and self.it_num_shots > 0:
+            it_examples = self.instruction_memory.query_by_prefix(
+                prefix, k=self.it_num_shots, model_id=model_id
+            )
+
         prompt = self._render_prediction_prompt(
             template=template,
             activities=activities,
             prefix=prefix,
             candidates=candidates,
+            it_examples=it_examples,
         )
 
         if self.mode == "logprob":
             cand_logprobs = self._score_candidates_logprob(prompt, candidates)
-            # Chọn candidate có logprob lớn nhất
             chosen = max(cand_logprobs.items(), key=lambda x: x[1])[0]
             meta: Dict[str, Any] = {
                 "prompt_id": template.id,
                 "raw_prompt": prompt,
                 "mode": "logprob",
                 "candidate_logprobs": cand_logprobs,
+                "it_fewshot_used": bool(it_examples),
+                "it_fewshot_count": len(it_examples),
             }
             return chosen, meta
 
@@ -238,6 +240,8 @@ class SemanticsLLM:
             "raw_prompt": prompt,
             "mode": "generate",
             "raw_output": raw_output,
+            "it_fewshot_used": bool(it_examples),
+            "it_fewshot_count": len(it_examples),
         }
         return chosen, meta
 
@@ -250,14 +254,7 @@ class SemanticsLLM:
         max_new_tokens: Optional[int] = None,
     ) -> str:
         """
-        Sinh text từ prompt (dùng cho explain hoặc debug).
-
-        Parameters
-        ----------
-        prompt:
-            Chuỗi prompt hoàn chỉnh.
-        max_new_tokens:
-            Nếu None → dùng self.gen_cfg.max_new_tokens.
+        Sinh text từ model, dùng cho cả prediction (mode=generate) và explain.
         """
         if max_new_tokens is None:
             max_new_tokens = self.gen_cfg.max_new_tokens
@@ -282,16 +279,13 @@ class SemanticsLLM:
                 top_p=self.gen_cfg.top_p,
                 do_sample=self.gen_cfg.do_sample,
                 pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
             )
 
-        # Chỉ lấy phần mới sinh sau prompt
-        generated_ids = output_ids[0][input_ids.shape[1] :]
-        text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-        return text.strip()
+        text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        return text
 
     # ------------------------------------------------------------------
-    # Render prompt prediction
+    # Render prompt prediction (+ IT few-shot nếu có)
     # ------------------------------------------------------------------
     def _render_prediction_prompt(
         self,
@@ -299,24 +293,67 @@ class SemanticsLLM:
         activities: Sequence[str],
         prefix: Sequence[str],
         candidates: List[str],
+        it_examples: Optional[Sequence[ITExample]] = None,
     ) -> str:
         """
-        Render prompt prediction từ PromptTemplate.
+        Render prompt prediction từ PromptTemplate + (optional) IT few-shot.
 
-        Quy ước string:
-        - {activities}: liệt kê trong ngoặc nhọn, ngăn cách bởi dấu phẩy.
-        - {prefix}: liệt kê theo thứ tự, ngăn cách bởi " -> ".
-        - {candidates}: liệt kê trong ngoặc nhọn, ngăn cách bởi dấu phẩy.
+        Cấu trúc:
+        - Nếu có it_examples:
+            + "Here are some past examples..." + mỗi example: instruction + correct answer.
+            + "Now solve the new case:\n"
+        - Sau đó là phần core template:
+            template.template.format(activities, prefix, candidates)
         """
-        activities_str = "{ " + ", ".join(map(str, activities)) + " }" if activities else "{}"
+        # stringify ...
+        if activities:
+            activities_str = "{ " + ", ".join(map(str, activities)) + " }"
+        else:
+            activities_str = "{ }"
+
         prefix_str = " -> ".join(map(str, prefix)) if prefix else "<EMPTY_PREFIX>"
         candidates_str = "{ " + ", ".join(map(str, candidates)) + " }"
 
-        return template.template.format(
+        core_prompt = template.template.format(
             activities=activities_str,
             prefix=prefix_str,
             candidates=candidates_str,
         )
+
+        # Nếu không có IT examples thì trả về core luôn
+        if not it_examples:
+            return core_prompt
+
+        fewshot_block = self._format_it_examples_block(it_examples)
+        full_prompt = (
+            "You are an advanced AI system specialized in solving process mining tasks.\n"
+            "Below are some previously solved examples of predicting the next activity.\n\n"
+            f"{fewshot_block}\n"
+            "Now, given a NEW case, answer the question below.\n\n"
+            f"{core_prompt}"
+        )
+        return full_prompt
+
+    def _format_it_examples_block(self, examples: Sequence[ITExample]) -> str:
+        """
+        Format danh sách ITExample thành block few-shot.
+
+        Mỗi example dạng:
+        Example i:
+        <instruction>
+        Correct answer: <output>
+        """
+        lines: List[str] = []
+        for idx, ex in enumerate(examples, start=1):
+            instr = ex.instruction.strip()
+            out = ex.output.strip()
+            if not instr or not out:
+                continue
+            lines.append(f"Example {idx}:")
+            lines.append(instr)
+            lines.append(f"Correct answer: {out}")
+            lines.append("")  # dòng trống
+        return "\n".join(lines).strip()
 
     # ------------------------------------------------------------------
     # Mode logprob: chấm điểm từng candidate
@@ -324,105 +361,94 @@ class SemanticsLLM:
     def _score_candidates_logprob(
         self,
         prompt: str,
-        candidates: List[str],
+        candidates: Sequence[str],
     ) -> Dict[str, float]:
         """
-        Ước lượng log-xác suất cho từng candidate:
-
-        log P(candidate | prompt) ≈ - loss(candidate_tokens) * len(candidate_tokens)
-
-        Cách làm (xấp xỉ):
-        - full_text = prompt + " " + candidate
-        - tokenize full_text → input_ids
-        - tokenize candidate → cand_ids
-        - labels = input_ids.clone(); set các token thuộc phần prompt = -100
-        - model(input_ids, labels=labels) → loss (mean per token)
-        - logprob ≈ -loss * len(candidate_tokens)
+        Tính log-xác suất P(candidate | prompt) xấp xỉ cho từng candidate.
         """
-        cand_logprobs: Dict[str, float] = {}
-        if torch is None:
-            return {c: 0.0 for c in candidates}
+        if F is None:
+            raise RuntimeError("torch.nn.functional (F) không khả dụng.")
+
+        scores: Dict[str, float] = {}
 
         for cand in candidates:
-            cand_text = str(cand)
-            full = prompt + "\n" + cand_text
-
-            enc = self.tokenizer(
-                full,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self.runtime_cfg.max_seq_len,
-            )
-            input_ids = enc["input_ids"].to(self.device)
-
-            # Tokenize candidate riêng để ước lượng độ dài phần candidate
-            cand_ids = self.tokenizer(
-                cand_text,
+            prompt_ids = self.tokenizer.encode(
+                prompt,
                 add_special_tokens=False,
-                return_tensors="pt",
-            )["input_ids"][0]
-            cand_len = cand_ids.shape[0]
+            )
+            cand_ids = self.tokenizer.encode(
+                " " + cand,
+                add_special_tokens=False,
+            )
 
-            # Giả định candidate nằm ở cuối chuỗi (thực tế hầu hết đúng)
-            labels = input_ids.clone()
-            # mask toàn bộ token phần prompt
-            if labels.shape[1] > cand_len:
-                labels[:, :-cand_len] = -100
+            token_ids = prompt_ids + cand_ids
+
+            max_len = self.runtime_cfg.max_seq_len
+            if len(token_ids) > max_len:
+                token_ids = token_ids[-max_len:]
+
+            full_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
 
             with torch.no_grad():
-                outputs = self.model(input_ids, labels=labels)
-                loss = outputs.loss  # cross-entropy mean trên các token được tính
+                outputs = self.model(input_ids=full_ids)
+                logits = outputs.logits  # [1, L, V]
 
-            # Tổng negative log-likelihood xấp xỉ
-            neg_loglik = loss.item() * max(cand_len, 1)
-            cand_logprobs[cand] = -neg_loglik
+            log_probs = F.log_softmax(logits, dim=-1)  # [1, L, V]
+            log_probs_tokens = log_probs[:, :-1, :]  # [1, L-1, V]
+            target_ids = full_ids[:, 1:]  # [1, L-1]
+            token_logprobs = log_probs_tokens.gather(
+                2, target_ids.unsqueeze(-1)
+            ).squeeze(-1)[0]  # [L-1]
 
-        return cand_logprobs
+            cand_len = min(len(cand_ids), token_logprobs.size(0))
+            if cand_len == 0:
+                scores[cand] = -math.inf
+                continue
+            cand_logprob = float(token_logprobs[-cand_len:].sum().item())
+            scores[cand] = cand_logprob
+
+        return scores
 
     # ------------------------------------------------------------------
-    # Mode generate: parse nhãn từ output
+    # Parse label từ output generate
     # ------------------------------------------------------------------
-    def _parse_label_from_output(self, raw_output: str, candidates: List[str]) -> str:
+    def _parse_label_from_output(
+        self,
+        raw_output: str,
+        candidates: Sequence[str],
+    ) -> str:
         """
-        Cố gắng trích nhãn từ output sinh ra:
-
-        Chiến lược đơn giản:
-        - Lấy dòng đầu tiên không rỗng.
-        - Strip khoảng trắng, dấu hai chấm, dấu chấm,...
-        - Nếu đúng bằng 1 trong các candidate → dùng luôn.
-        - Nếu không khớp hoàn toàn:
-            + thử so sánh lower-case / strip.
-            + nếu vẫn không tìm thấy → fallback: candidate[0].
+        Parse nhãn từ output model (mode=generate) theo heuristic đơn giản.
         """
-        if not raw_output:
+        if not raw_output.strip():
             return candidates[0]
 
-        lines = [ln.strip() for ln in raw_output.splitlines() if ln.strip()]
-        first = lines[0] if lines else raw_output.strip()
+        first_line = raw_output.strip().splitlines()[0].strip()
 
-        # Loại bỏ prefix kiểu "Answer:" hoặc "The next activity is"
-        for prefix in ["Answer:", "answer:", "Next activity:", "The next activity is"]:
-            if first.lower().startswith(prefix.lower()):
-                first = first[len(prefix) :].strip()
+        for prefix in ["Answer:", "answer:", "Next activity:", "next activity:"]:
+            if first_line.lower().startswith(prefix.lower()):
+                first_line = first_line[len(prefix) :].strip()
+                break
 
-        # Bỏ các dấu câu cuối
-        first_clean = first.strip().strip(".:;,!").strip()
+        first_clean = first_line.strip().strip(" '\"")
+        while first_clean and first_clean[-1] in {".", ",", ";", ":"}:
+            first_clean = first_clean[:-1].strip()
 
-        # Thử match trực tiếp
-        if first_clean in candidates:
-            return first_clean
+        if not first_clean:
+            return candidates[0]
 
-        # Thử match lower-case
+        for c in candidates:
+            if first_clean.lower() == c.lower():
+                return c
+
         low_map = {c.lower(): c for c in candidates}
         if first_clean.lower() in low_map:
             return low_map[first_clean.lower()]
 
-        # Nếu output chứa candidate như một từ con
         for c in candidates:
-            if c in first:
+            if c in first_line:
                 return c
 
-        # Fallback
         return candidates[0]
 
 
