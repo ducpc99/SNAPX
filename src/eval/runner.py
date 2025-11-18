@@ -1,34 +1,73 @@
 # src/eval/runner.py
-# ------------------
+# -------------------
 """
-Eval Runner cho S-NAP:
-- Accuracy, Macro-F1
-- MRR, NDCG@k
-- Explain metrics (Reason-Pass, Consistency stub)
-- Cost-Performance (latency + CPR)
-- Thống kê Guard (tần suất dùng, số candidate bị chặn trung bình)
+Runner đánh giá S-NAPX Hybrid.
 
-Thiết kế đơn giản, dễ nối với script.
+Nhiệm vụ
+--------
+- Nhận danh sách EvalSample (prefix, y_true, case_id, optional gold_explanation).
+- Gọi model (HybridSNAP) để lấy:
+    + y_pred (nhãn cuối cùng)
+    + ranked_labels (danh sách label được xếp hạng)
+    + meta (chứa explanation, cost, v.v. nếu có)
+- Tính các metric:
+    + Accuracy
+    + Macro-F1
+    + MRR
+    + NDCG@k
+    + Explain Metrics (Reason-Pass, length, token-overlap với gold_explanation, ...)
+    + Latency (nếu measure_cost=True)
+    + CPR = Macro-F1 / avg_latency_sec (nếu có latency)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence, Tuple, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from src.hybrid.pipeline import HybridSNAP
-from src.eval.cost import measure_latency, estimate_cpr, LatencyStats
-from src.eval.explain_metrics import (
+import math
+import time
+from collections import Counter, defaultdict
+
+from .explain_metrics import (
     ExplanationRecord,
     summarize_explain_metrics,
 )
 
 
+# ------------------------------------------------
+# Dataclasses
+# ------------------------------------------------
 @dataclass
 class EvalSample:
+    """
+    Một sample dùng cho evaluation.
+
+    Attributes
+    ----------
+    case_id:
+        ID duy nhất cho sample (ví dụ: model_id_revision_prefixLen).
+    prefix:
+        Chuỗi hoạt động đã xảy ra (list[str]).
+    y_true:
+        Nhãn đúng (activity tiếp theo).
+    gold_explanation:
+        (Tuỳ chọn) giải thích "chuẩn" từ dataset IT (cột output).
+        Nếu chạy trên S-NAP csv thường → None.
+    """
+
     case_id: str
-    prefix: Sequence[str]
+    prefix: List[str]
     y_true: str
+    gold_explanation: Optional[str] = None
+
+
+@dataclass
+class LatencyStats:
+    avg_ms: float
+    p50_ms: float
+    p90_ms: float
+    p95_ms: float
 
 
 @dataclass
@@ -42,206 +81,233 @@ class EvalResult:
     cpr: Optional[float]
 
 
-# ---------- Classification metrics ----------
+# ------------------------------------------------
+# Helpers: classification metrics
+# ------------------------------------------------
+def _compute_accuracy(y_true: Sequence[str], y_pred: Sequence[str]) -> float:
+    if not y_true:
+        return 0.0
+    correct = sum(1 for t, p in zip(y_true, y_pred) if t == p)
+    return correct / len(y_true)
 
-def _compute_accuracy(preds: List[str], labels: List[str]) -> float:
+
+def _compute_macro_f1(y_true: Sequence[str], y_pred: Sequence[str]) -> float:
+    """
+    Tự implement Macro-F1 để không phụ thuộc sklearn.
+    """
+    labels = sorted(set(y_true) | set(y_pred))
     if not labels:
         return 0.0
-    correct = sum(1 for p, y in zip(preds, labels) if p == y)
-    return correct / len(labels)
 
+    # đếm TP, FP, FN cho từng label
+    tp = Counter()
+    fp = Counter()
+    fn = Counter()
 
-def _compute_macro_f1(preds: List[str], labels: List[str]) -> float:
-    if not labels:
-        return 0.0
-    # F1 per class
-    classes = sorted(set(labels))
+    for t, p in zip(y_true, y_pred):
+        if t == p:
+            tp[t] += 1
+        else:
+            fp[p] += 1
+            fn[t] += 1
+
     f1s: List[float] = []
-    for c in classes:
-        tp = sum(1 for p, y in zip(preds, labels) if p == c and y == c)
-        fp = sum(1 for p, y in zip(preds, labels) if p == c and y != c)
-        fn = sum(1 for p, y in zip(preds, labels) if p != c and y == c)
+    for lab in labels:
+        tp_l = tp[lab]
+        fp_l = fp[lab]
+        fn_l = fn[lab]
 
-        if tp == 0 and (fp > 0 or fn > 0):
-            f1s.append(0.0)
-            continue
-        if tp == 0 and fp == 0 and fn == 0:
-            # class không xuất hiện trong label
+        if tp_l == 0 and fp_l == 0 and fn_l == 0:
+            # label không xuất hiện, bỏ qua
             continue
 
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        if precision + recall == 0:
-            f1s.append(0.0)
+        prec = tp_l / float(tp_l + fp_l) if (tp_l + fp_l) > 0 else 0.0
+        rec = tp_l / float(tp_l + fn_l) if (tp_l + fn_l) > 0 else 0.0
+        if prec + rec == 0.0:
+            f1 = 0.0
         else:
-            f1s.append(2 * precision * recall / (precision + recall))
-    return sum(f1s) / len(f1s) if f1s else 0.0
+            f1 = 2.0 * prec * rec / (prec + rec)
+        f1s.append(f1)
 
-
-def _compute_mrr(
-    ranked_candidates_list: List[List[str]],
-    labels: List[str],
-) -> float:
-    """
-    Mean Reciprocal Rank (MRR):
-    - Với mỗi mẫu:
-        rank = vị trí của y_true trong candidate list (tính từ 1)
-        rr = 1/rank nếu tìm thấy, else 0
-    """
-    if not labels:
+    if not f1s:
         return 0.0
-    rrs: List[float] = []
-    for candidates, y in zip(ranked_candidates_list, labels):
-        if y in candidates:
-            rank = candidates.index(y) + 1
-            rrs.append(1.0 / rank)
-        else:
-            rrs.append(0.0)
-    return sum(rrs) / len(rrs)
+    return sum(f1s) / float(len(f1s))
 
 
-def _compute_ndcg_at_k(
-    ranked_candidates_list: List[List[str]],
-    labels: List[str],
-    k: int,
-) -> float:
+def _compute_mrr_and_ndcg(
+    y_true: Sequence[str],
+    ranked_lists: Sequence[Sequence[str]],
+    ndcg_k: int,
+) -> Tuple[float, float]:
     """
-    NDCG@k: đơn giản với ground truth 1 nhãn:
-    - Nếu y_true nằm ở vị trí r (1-based) <= k:
-        DCG = 1 / log2(r+1)
-    - iDCG = 1 (vì ideal là ở vị trí 1)
+    Tính MRR và NDCG@k, với giả định mỗi sample chỉ có 1 nhãn đúng.
+
+    - MRR: trung bình reciprocal rank của nhãn đúng trong ranked_list.
+    - NDCG@k: do chỉ 1 nhãn đúng, IDCG = 1, nên NDCG = DCG = 1/log2(rank+1)
+      nếu nhãn đúng nằm trong top-k, ngược lại 0.
     """
-    import math
+    if not y_true or not ranked_lists:
+        return 0.0, 0.0
 
-    if not labels or k <= 0:
-        return 0.0
+    rr_list: List[float] = []
+    ndcg_list: List[float] = []
 
-    scores: List[float] = []
-    for candidates, y in zip(ranked_candidates_list, labels):
-        if y in candidates:
-            rank = candidates.index(y) + 1
-            if rank <= k:
-                dcg = 1.0 / math.log2(rank + 1)
-            else:
-                dcg = 0.0
+    for t, ranked in zip(y_true, ranked_lists):
+        try:
+            pos = ranked.index(t)
+        except ValueError:
+            pos = -1
+
+        # MRR component
+        if pos >= 0:
+            rr_list.append(1.0 / float(pos + 1))
         else:
-            dcg = 0.0
-        scores.append(dcg)  # iDCG = 1
-    return sum(scores) / len(scores)
+            rr_list.append(0.0)
+
+        # NDCG@k component
+        if 0 <= pos < ndcg_k:
+            # DCG với gain=1 duy nhất tại position pos
+            dcg = 1.0 / math.log2(pos + 2.0)
+            ndcg_list.append(dcg)  # IDCG=1
+        else:
+            ndcg_list.append(0.0)
+
+    mrr = sum(rr_list) / float(len(rr_list)) if rr_list else 0.0
+    ndcg_k_avg = sum(ndcg_list) / float(len(ndcg_list)) if ndcg_list else 0.0
+    return mrr, ndcg_k_avg
 
 
-# ---------- Main eval ----------
+# ------------------------------------------------
+# Helpers: latency
+# ------------------------------------------------
+def _compute_latency_stats(latencies_ms: List[float]) -> Optional[LatencyStats]:
+    if not latencies_ms:
+        return None
 
+    xs = sorted(latencies_ms)
+    n = len(xs)
+
+    def _percentile(p: float) -> float:
+        if n == 1:
+            return xs[0]
+        k = (n - 1) * p
+        f = math.floor(k)
+        c = math.ceil(k)
+        if f == c:
+            return xs[int(k)]
+        d0 = xs[f] * (c - k)
+        d1 = xs[c] * (k - f)
+        return d0 + d1
+
+    avg_ms = sum(xs) / float(n)
+    p50 = _percentile(0.5)
+    p90 = _percentile(0.9)
+    p95 = _percentile(0.95)
+
+    return LatencyStats(avg_ms=avg_ms, p50_ms=p50, p90_ms=p90, p95_ms=p95)
+
+
+# ------------------------------------------------
+# Core runner
+# ------------------------------------------------
 def run_evaluation(
     samples: List[EvalSample],
-    model: HybridSNAP,
-    activities_vocab: Sequence[str],
+    model: Any,
+    activities_vocab: List[str],
     measure_cost: bool = False,
     ndcg_k: int = 5,
 ) -> EvalResult:
     """
-    Chạy eval cho 1 model (HybridSNAP).
+    Chạy đánh giá trên list EvalSample với model (HybridSNAP).
 
     Parameters
     ----------
     samples:
-        Danh sách EvalSample (case_id, prefix, y_true).
+        Danh sách sample đã chuẩn hóa (prefix, y_true, case_id, gold_explanation).
     model:
-        Đối tượng HybridSNAP đã setup đầy đủ (seq + graph + sem + guard).
+        Model đã khởi tạo (thường là HybridSNAP).
+        Yêu cầu có method:
+            predict(prefix, activities_vocab, measure_cost=False) ->
+                (y_pred: str, ranked_labels: List[str], meta: Dict[str, Any])
     activities_vocab:
-        Vocab activity dùng truyền vào predict_one.
+        Tập toàn bộ activity trong process.
     measure_cost:
-        Nếu True → đo thêm latency & CPR.
+        Nếu True → đo latency cho từng sample.
     ndcg_k:
         K cho NDCG@k.
 
     Returns
     -------
-    EvalResult:
-        Gồm classification metrics, explain metrics, cost metrics.
+    EvalResult
     """
-    y_true_list: List[str] = []
-    y_pred_list: List[str] = []
-    candidates_list: List[List[str]] = []
-    expl_records: List[ExplanationRecord] = []
 
-    # thống kê nhẹ về Guard
-    guard_used_cnt = 0
-    guard_total_blocked = 0
+    if not samples:
+        raise ValueError("run_evaluation: samples rỗng.")
+
+    y_true_all: List[str] = []
+    y_pred_all: List[str] = []
+    ranked_lists_all: List[List[str]] = []
+    latencies_ms: List[float] = []
+    explain_records: List[ExplanationRecord] = []
 
     for s in samples:
-        out = model.predict_one(prefix=s.prefix, activities=activities_vocab)
-        y_true_list.append(s.y_true)
-
-        y_pred = str(out.get("prediction", ""))
-        y_pred_list.append(y_pred)
-        candidates_list.append(list(out.get("candidates", [])))
-
-        # Meta block
-        meta: Dict[str, Any] = out.get("meta", {}) or {}
-
-        # Explanation metrics
-        expl_meta = meta.get("explanation")
-        if isinstance(expl_meta, dict) and "text" in expl_meta:
-            expl_records.append(
-                ExplanationRecord(
-                    case_id=s.case_id,
-                    y_true=s.y_true,
-                    y_pred=y_pred,
-                    explanation_text=str(expl_meta.get("text", "")),
-                    reason_pass_local=bool(expl_meta.get("reason_pass_local", False)),
-                    human_score=None,  # có thể bổ sung từ anotator sau
-                )
-            )
-
-        # Guard stats (nếu có)
-        guard_meta = meta.get("guard", {})
-        if isinstance(guard_meta, dict) and guard_meta.get("used", False):
-            guard_used_cnt += 1
-            num_blocked = guard_meta.get("num_blocked", 0)
-            try:
-                guard_total_blocked += int(num_blocked)
-            except Exception:
-                # nếu field kì lạ thì bỏ qua
-                pass
-
-    # Classification metrics
-    acc = _compute_accuracy(y_pred_list, y_true_list)
-    macro_f1 = _compute_macro_f1(y_pred_list, y_true_list)
-    mrr = _compute_mrr(candidates_list, y_true_list)
-    ndcg = _compute_ndcg_at_k(candidates_list, y_true_list, ndcg_k)
-
-    # Explain metrics
-    explain_metrics = summarize_explain_metrics(expl_records)
-
-    # Bổ sung guard metrics vào explain_metrics (cho tiện xem chung 1 chỗ)
-    n = len(samples) if samples else 1
-    guard_used_rate = guard_used_cnt / float(n)
-    guard_avg_blocked = (
-        guard_total_blocked / float(guard_used_cnt) if guard_used_cnt > 0 else 0.0
-    )
-    explain_metrics = dict(explain_metrics)
-    explain_metrics["guard_used_rate"] = guard_used_rate
-    explain_metrics["guard_avg_blocked"] = guard_avg_blocked
-
-    # Cost-performance
-    latency_stats: Optional[LatencyStats] = None
-    cpr: Optional[float] = None
-    if measure_cost:
-        prefixes = [s.prefix for s in samples]
-        latency_stats = measure_latency(
-            predict_one=lambda p: model.predict_one(p, activities=activities_vocab),
-            prefixes=prefixes,
-            warmup=3,
-            repeat=min(20, max(5, len(prefixes))),
+        # đo thời gian nếu cần
+        t0 = time.perf_counter()
+        y_pred, ranked_labels, meta = model.predict(
+            prefix=s.prefix,
+            activities_vocab=activities_vocab,
+            measure_cost=measure_cost,
         )
-        cpr = estimate_cpr(main_metric=macro_f1, latency_stats=latency_stats)
+        t1 = time.perf_counter()
+
+        y_true_all.append(s.y_true)
+        y_pred_all.append(y_pred)
+        ranked_lists_all.append(list(ranked_labels))
+
+        if measure_cost:
+            lat_ms = (t1 - t0) * 1000.0
+            latencies_ms.append(lat_ms)
+
+        # Lấy meta explanation (nếu có)
+        expl_meta: Dict[str, Any] = meta.get("explanation", {}) if isinstance(meta, dict) else {}
+        expl_text = str(expl_meta.get("text", "")).strip()
+        reason_pass = bool(expl_meta.get("reason_pass_local", False))
+
+        # gold_explanation từ sample (nếu được điền khi tạo EvalSample)
+        gold_expl = s.gold_explanation
+
+        explain_records.append(
+            ExplanationRecord(
+                case_id=s.case_id,
+                y_true=s.y_true,
+                y_pred=y_pred,
+                explanation_text=expl_text,
+                reason_pass_local=reason_pass,
+                human_score=None,
+                gold_explanation=gold_expl,
+            )
+        )
+
+    # 1) Classification metrics
+    accuracy = _compute_accuracy(y_true_all, y_pred_all)
+    macro_f1 = _compute_macro_f1(y_true_all, y_pred_all)
+    mrr, ndcg_at_k = _compute_mrr_and_ndcg(y_true_all, ranked_lists_all, ndcg_k=ndcg_k)
+
+    # 2) Explain metrics
+    explain_metrics = summarize_explain_metrics(explain_records, pairs=None)
+
+    # 3) Latency & CPR
+    latency_stats = _compute_latency_stats(latencies_ms) if measure_cost else None
+    cpr: Optional[float] = None
+    if latency_stats is not None and latency_stats.avg_ms > 0.0:
+        avg_sec = latency_stats.avg_ms / 1000.0
+        cpr = macro_f1 / avg_sec
 
     return EvalResult(
-        accuracy=acc,
+        accuracy=accuracy,
         macro_f1=macro_f1,
         mrr=mrr,
-        ndcg_at_k=ndcg,
+        ndcg_at_k=ndcg_at_k,
         explain_metrics=explain_metrics,
         latency=latency_stats,
         cpr=cpr,
