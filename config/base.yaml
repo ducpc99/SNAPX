@@ -1,84 +1,76 @@
-# base.yaml – Cấu hình chung cho S-NAPX (local + Kaggle)
+# config/base.yaml
+# Khung mặc định cho mọi run, sẽ được override bởi các file khác.
 
-run_name: "snapx_local_hybrid_TinyLlama"
 task: next_activity
 
-# -----------------------------
-# Dataset (bắt buộc cho run_local_eval.py)
-# -----------------------------
+paths:
+  output_dir: outputs
+
 dataset:
-  path: "datasets/S-NAP.csv"              # đã được symlink trong snapx.py
-  split_file: "datasets/snap_train_val_test.pkl"
-  case_id_col: "model_id"
-  prefix_col: "prefix"
-  label_col: "next"
+  # Mặc định: S-NAP gốc, sẽ override bởi data_it.yaml khi cần
+  path: datasets/S-NAP.csv
+  split_file: datasets/snap_train_val_test.pkl
+  case_id_col: model_id
+  prefix_col: prefix
+  label_col: next
   prefix_sep: ";"
 
-# -----------------------------
-# Tiền xử lý / lọc dữ liệu
-# -----------------------------
 data:
-  drop_end: true          # bỏ các next = [END]/END/...
+  drop_end: true
   invert_labels: false
   min_activities: 2
-  load_limit: 20000       # đồng bộ với LOAD_LIMIT trong notebook
+  load_limit: null   # override ở local_eval.yaml / colab.yaml nếu muốn giới hạn
 
-# -----------------------------
-# Sequence-only (Markov ensemble)
-# -----------------------------
 sequence:
-  enabled: true
   alpha: 0.5
   markov_order: 2
   min_count: 1
 
-# -----------------------------
-# Graph (DFG + Reasoner)
-# -----------------------------
 graph:
   enabled: true
   dfg:
     min_count: 1
     min_ratio: 0.0
   reasoner:
-    hard_mask: true
+    hard_mask: false
     boost_factor: 0.5
     min_prob_keep: 0.0
 
-# -----------------------------
-# Semantics (LLM)
-# -----------------------------
 semantics:
-  use_llm: true                           # sẽ bị override thành False trong kaggle_seq_only.yaml
-  model_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  device: "auto"                          # để Kaggle tự chọn GPU nếu có
+  # Mặc định: tắt LLM, các mode sẽ override
+  use_llm: false
+  model_name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
   load_in_4bit: true
   max_seq_len: 128
-  mode: "logprob"
+  mode: logprob
   gen:
-    max_new_tokens: 16
+    max_new_tokens: 32
     temperature: 0.0
     top_p: 1.0
     do_sample: false
 
-# -----------------------------
-# Semantics Prior
-# -----------------------------
+  # IT few-shot (InstructionMemory)
+  use_it_fewshot: false
+  it_num_shots: 3
+  it_memory:
+    enabled: false
+    dataset_path: datasets/S-NAP_instructions.csv
+    limit: null
+    max_examples: 200000
+    min_prefix_len: 1
+
 semantics_prior:
-  enabled: true
-  mode: "activity"
+  enabled: false
+  mode: pair           # chúng ta build pair prior từ IT
   default_weight: 1.0
   lambda_mix: 0.2
   floor: 0.7
   ceil: 1.3
-  prior_map_path: null
+  prior_map_path: datasets/sem_prior_pairs.json
 
-# -----------------------------
-# Guard
-# -----------------------------
 guard:
-  enabled: true
-  mode: "soft"
+  enabled: false
+  mode: soft
   use_activity_guard: true
   use_trace_guard: false
   penalty_factor: 0.5
@@ -86,26 +78,14 @@ guard:
   activity_dataset: null
   trace_dataset: null
 
-# -----------------------------
-# Hybrid controller
-# -----------------------------
 hybrid:
   top_k: 5
   enable_graph_reasoner: true
-  enable_semantics_prior: true
-  enable_guard: true
-  enable_explanation: true
+  enable_semantics_prior: false
+  enable_guard: false
+  enable_explanation: false
 
-# -----------------------------
-# Eval config
-# -----------------------------
 eval:
-  num_samples: 50
+  num_samples: 2000   # override ở local_eval.yaml / colab.yaml nếu muốn
   ndcg_k: 5
   measure_cost: true
-
-# -----------------------------
-# Paths
-# -----------------------------
-paths:
-  output_dir: "outputs"

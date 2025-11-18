@@ -1,0 +1,28 @@
+# config/mode_hybrid_it.yaml
+run_name: hybrid_it
+
+semantics:
+  use_llm: true
+  use_it_fewshot: true
+  it_num_shots: 3
+  it_memory:
+    enabled: true
+    # dataset_path default đã là datasets/S-NAP_instructions.csv trong base.yaml
+    # có thể override nếu cần
+
+semantics_prior:
+  enabled: true
+  # prior_map_path đã được set sẵn trong base.yaml
+  # nhớ chạy scripts/build_sem_prior.py trước để sinh file JSON
+
+graph:
+  enabled: true
+
+guard:
+  enabled: false      # nếu muốn bật Guard, ta có thể thêm guard.yaml riêng
+
+hybrid:
+  enable_graph_reasoner: true
+  enable_semantics_prior: true
+  enable_guard: false
+  enable_explanation: true

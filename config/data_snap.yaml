@@ -1,0 +1,4 @@
+# config/data_snap.yaml
+dataset:
+  path: datasets/S-NAP.csv
+  split_file: datasets/snap_train_val_test.pkl

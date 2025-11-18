@@ -1,30 +1,16 @@
-# local_eval.yaml - Cấu hình cho LLM-only (TinyLlama)
-run_name: "snapx_local_llm_only_tinyllama_eval"
+# config/local_eval.yaml
+# Dùng chung cho local / Kaggle nếu muốn eval nhanh.
 
-dataset:
-  path: "datasets/S-NAP_instructions.csv"  # Đảm bảo đường dẫn đúng tới dữ liệu S-NAP
-  split_file: "datasets/train_val_test.pkl"  # Đảm bảo phân chia dữ liệu đúng (nếu có)
+paths:
+  output_dir: outputs   # có thể đổi thành outputs_local nếu muốn tách
 
-evaluation:
-  metrics:
-    accuracy: true              # Đánh giá độ chính xác
-    macro_f1: true              # Đánh giá macro F1
-    mrr: true                   # Đo lường Mean Reciprocal Rank
-    ndcg: true                  # Đo lường Normalized Discounted Cumulative Gain
+data:
+  load_limit: 20000     # giống trong notebook Kaggle trước đây
 
-  num_samples: 50              # Giảm số mẫu xuống 50 để chạy nhanh hơn
+eval:
+  num_samples: 200      # local test nhanh; khi chạy chính thức tăng lên
 
-  measure_latency: true        # Đo lường thời gian trễ cho mỗi dự đoán
-  measure_memory: true         # Đo lường bộ nhớ sử dụng
-
-  cost_performance:
-    enabled: true              # Bật tính toán Cost-Performance Ratio (CPR)
-    latency_threshold: 2.0     # Ngưỡng latency (seconds)
-    memory_threshold: 500MB    # Ngưỡng bộ nhớ (MB)
-
-  explanation:
-    enabled: true             # Không sinh giải thích cho LLM-only
-
-dataset:
-  path: "datasets/S-NAP_instructions.csv"
-  split_file: "datasets/train_val_test.pkl"
+semantics:
+  model_name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  load_in_4bit: true
+  max_seq_len: 256

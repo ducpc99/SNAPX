@@ -1,0 +1,23 @@
+# config/mode_llm.yaml
+run_name: llm_only
+
+semantics:
+  use_llm: true
+  use_it_fewshot: false
+  it_memory:
+    enabled: false
+
+semantics_prior:
+  enabled: false
+
+graph:
+  enabled: false
+
+guard:
+  enabled: false
+
+hybrid:
+  enable_graph_reasoner: false
+  enable_semantics_prior: false
+  enable_guard: false
+  enable_explanation: true    # để sinh explanation & chấm explain_metrics
