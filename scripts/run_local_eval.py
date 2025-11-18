@@ -10,7 +10,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -35,6 +35,7 @@ from src.graph_reasoning.semantics_prior import SemanticsPrior, SemanticsPriorCo
 from src.semantics.prompt_pool import PromptPool, PromptPoolConfig
 from src.semantics.inference import SemanticsLLM, RuntimeConfig, GenConfig
 from src.hybrid.pipeline import HybridSNAP, HybridConfig
+from src.semantics.instruction_memory import InstructionMemory
 
 # Guard
 from src.guard.config import GuardConfig
@@ -167,38 +168,47 @@ def _print_cfg_summary(cfg: Dict[str, Any]) -> None:
 def main() -> None:
     # Khởi tạo parser cho các tham số dòng lệnh
     parser = argparse.ArgumentParser(description="Run Local Evaluation for S-NAPX Hybrid")
-    
+
     # Tham số cho file cấu hình (có thể truyền nhiều file YAML)
     parser.add_argument(
-        "--config", "-c",
-        type=str, nargs="+", required=True,
-        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)"
+        "--config",
+        "-c",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)",
     )
-    
+
     # Tham số để bật chế độ theo dõi GPU/VRAM
     parser.add_argument(
-        "--monitor-gpu", action="store_true",
-        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy"
+        "--monitor-gpu",
+        action="store_true",
+        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy",
     )
-    
+
     # Tham số chu kỳ in trạng thái GPU
     parser.add_argument(
-        "--gpu-interval", type=float, default=2.0,
-        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu"
+        "--gpu-interval",
+        type=float,
+        default=2.0,
+        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu",
     )
-    
+
     # Tham số để lưu cấu hình đã gộp vào thư mục output
     parser.add_argument(
-        "--save-merged-cfg", action="store_true",
-        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm"
+        "--save-merged-cfg",
+        action="store_true",
+        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm",
     )
-    
+
     # Tham số đường dẫn tới file phân chia train/val/test
     parser.add_argument(
-        "--split-file", type=str, required=True,
-        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)"
+        "--split-file",
+        type=str,
+        required=True,
+        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)",
     )
-    
+
     # Phân tích các tham số dòng lệnh
     args = parser.parse_args()
 
@@ -207,6 +217,11 @@ def main() -> None:
 
     # 1) Load & merge các file YAML cấu hình
     cfg = load_config(cfg_paths)
+
+    # Ghi đè dataset.split_file bằng CLI --split-file để đảm bảo dùng đúng file pkl
+    if "dataset" not in cfg or cfg["dataset"] is None:
+        cfg["dataset"] = {}
+    cfg["dataset"]["split_file"] = args.split_file
 
     # 2) Chuẩn bị thư mục output
     paths_cfg = cfg.get("paths", {})
@@ -217,10 +232,10 @@ def main() -> None:
 
     # In thông báo bắt đầu chạy mô hình
     print("\n🚀  Bắt đầu chạy S-NAPX Hybrid (Local Mode)...\n")
-    
+
     # In ra cấu hình tóm tắt (để kiểm tra trước khi chạy)
     _print_cfg_summary(cfg)
-    
+
     # Lưu bản cấu hình đã gộp nếu tham số --save-merged-cfg được bật
     if args.save_merged_cfg:
         merged_cfg_path = out_dir / "run_config_merged.yaml"
@@ -256,6 +271,8 @@ def main() -> None:
         split_file = dataset_cfg.get("split_file")
         if not dataset_path:
             raise ValueError("dataset.path chưa được cấu hình trong YAML.")
+        if not split_file:
+            raise ValueError("dataset.split_file hoặc --split-file chưa được thiết lập.")
 
         load_limit = data_cfg.get("load_limit", None)
         drop_end = data_cfg.get("drop_end", True)
@@ -292,15 +309,31 @@ def main() -> None:
         else:
             df_eval = df_test
 
-        # Tạo EvalSample từ df_eval
+        # Tạo EvalSample từ df_eval (có nối gold_explanation nếu có cột 'output')
         samples: List[EvalSample] = []
+        has_output_col = "output" in df_eval.columns
+
         for _, row in df_eval.iterrows():
             pref = list(row["prefix"])
             y_true = str(row["next"])
             mid = str(row.get("model_id", ""))
             rid = str(row.get("revision_id", "")) if "revision_id" in row else ""
             case_id = f"{mid}_{rid}" if rid != "" else mid
-            samples.append(EvalSample(case_id=case_id, prefix=pref, y_true=y_true))
+
+            gold_expl: Optional[str] = None
+            if has_output_col:
+                v = str(row.get("output", "")).strip()
+                if v and v.lower() != "nan":
+                    gold_expl = v
+
+            samples.append(
+                EvalSample(
+                    case_id=case_id,
+                    prefix=pref,
+                    y_true=y_true,
+                    gold_explanation=gold_expl,
+                )
+            )
 
         if not samples:
             raise ValueError("Không có sample nào sau khi tạo EvalSample.")
@@ -378,12 +411,43 @@ def main() -> None:
         sem_prior = SemanticsPrior(cfg=sem_prior_conf, prior_map=prior_map)
 
         # =======================
-        # 6) PromptPool + LLM
+        # 6) PromptPool + LLM + IT few-shot
         # =======================
         prompt_pool = PromptPool(PromptPoolConfig())
         sem_cfg = cfg.get("semantics", {}) or {}
         use_llm = sem_cfg.get("use_llm", False)
-        sem_llm = None
+        sem_llm: Optional[SemanticsLLM] = None
+
+        # IT few-shot memory (InstructionMemory)
+        instruction_memory = None
+        it_cfg = sem_cfg.get("it_memory", {}) or {}
+        it_enabled = it_cfg.get("enabled", False)
+
+        if use_llm and it_enabled:
+            # ưu tiên path trong it_memory; nếu không có thì fallback dataset.path
+            dataset_cfg_for_it = cfg.get("dataset", {}) or {}
+            it_dataset_path = it_cfg.get("dataset_path") or dataset_cfg_for_it.get("path")
+
+            if it_dataset_path:
+                try:
+                    instruction_memory = InstructionMemory.from_csv(
+                        dataset_path=it_dataset_path,
+                        limit=it_cfg.get("limit"),
+                        max_examples=it_cfg.get("max_examples"),
+                        min_prefix_len=it_cfg.get("min_prefix_len", 1),
+                    )
+                    print(
+                        f"✅  InstructionMemory loaded from {it_dataset_path} "
+                        f"with {len(instruction_memory.examples)} examples."
+                    )
+                except Exception as e:
+                    print(f"[Warn] Không load được InstructionMemory từ {it_dataset_path}: {e}")
+                    instruction_memory = None
+            else:
+                print(
+                    "[Warn] semantics.it_memory.enabled=True nhưng không tìm được dataset_path "
+                    "(thiếu semantics.it_memory.dataset_path hoặc dataset.path)."
+                )
 
         if use_llm:
             print("🧠  Khởi tạo SemanticsLLM (có thể tốn thời gian / VRAM)...")
@@ -400,12 +464,18 @@ def main() -> None:
                 do_sample=sem_cfg.get("gen", {}).get("do_sample", False),
             )
             mode = sem_cfg.get("mode", "logprob")
+            use_it_fewshot = sem_cfg.get("use_it_fewshot", False)
+            it_num_shots = sem_cfg.get("it_num_shots", 3)
+
             try:
                 sem_llm = SemanticsLLM(
                     prompt_pool=prompt_pool,
                     runtime_cfg=runtime_cfg,
                     gen_cfg=gen_cfg,
                     mode=mode,
+                    instruction_memory=instruction_memory,
+                    use_it_fewshot=use_it_fewshot,
+                    it_num_shots=it_num_shots,
                 )
                 print("✅  SemanticsLLM ready trên device:", sem_llm.device)
             except Exception as e:
