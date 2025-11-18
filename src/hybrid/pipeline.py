@@ -13,10 +13,29 @@ from src.semantics.prompt_pool import PromptPool
 from src.semantics.explanations import generate_explanation
 from src.guard.core import Guard  # Guard V2 (apply trên phân phối)
 
+# Kiểu danh sách ứng viên: [(label, score), ...]
 RankedCandidates = List[Tuple[str, float]]
+
 
 @dataclass
 class HybridConfig:
+    """
+    Cấu hình cho HybridSNAP.
+
+    Attributes
+    ----------
+    top_k:
+        Số lượng candidate tối đa lấy từ SequenceEnsemble.
+    enable_graph_reasoner:
+        Bật / tắt GraphReasoner (DFG).
+    enable_semantics_prior:
+        Bật / tắt SemanticsPrior.
+    enable_guard:
+        Bật / tắt Guard (footprint/anomaly soft penalty).
+    enable_explanation:
+        Nếu True và có LLM + PromptPool → sinh giải thích bằng generate_explanation().
+    """
+
     top_k: int = 5
     enable_graph_reasoner: bool = True
     enable_semantics_prior: bool = True
@@ -25,7 +44,16 @@ class HybridConfig:
 
 
 class HybridSNAP:
-    """Pipeline chính cho S-NAP Hybrid (phiên bản có Explanation + Guard V2 + Semantics Prior + Graph Reasoning)."""
+    """
+    Pipeline chính cho S-NAP Hybrid:
+
+    1) SequenceEnsemble → top-k candidate + score.
+    2) GraphReasoner (DFG) → re-rank soft/hard mask.
+    3) SemanticsPrior → inject prior ngữ nghĩa từ JSON.
+    4) Guard → penalty các candidate bất thường.
+    5) SemanticsLLM → chọn nhãn cuối cùng từ danh sách candidate.
+    6) (tuỳ chọn) generate_explanation → sinh giải thích.
+    """
 
     def __init__(
         self,
@@ -48,13 +76,26 @@ class HybridSNAP:
         self.semantics_llm = semantics_llm
         self.guard = guard
         self.prompt_pool = prompt_pool
+        # vocab toàn bộ activity (thường lấy từ TRAIN)
         self.activities_vocab = list(activities_vocab) if activities_vocab is not None else None
 
-    # ---------------------- Sequence ----------------------
+    # ------------------------------------------------------------------
+    # 1) Sequence
+    # ------------------------------------------------------------------
     def _sequence_rank(
         self,
         prefix: Sequence[str],
     ) -> Tuple[RankedCandidates, Dict[str, Any]]:
+        """
+        Gọi SequenceEnsemble để lấy top-k ứng viên.
+
+        Returns
+        -------
+        ranked:
+            List[(activity, score)] sắp xếp giảm dần theo score.
+        meta:
+            Thông tin debug: scores raw, nguồn model,...
+        """
         scores = self.seq_model.propose_candidates(prefix, k=self.cfg.top_k)
         ranked: RankedCandidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         meta = {
@@ -64,12 +105,26 @@ class HybridSNAP:
         }
         return ranked, meta
 
-    # ---------------------- GraphReasoner ----------------------
+    # ------------------------------------------------------------------
+    # 2) GraphReasoner
+    # ------------------------------------------------------------------
     def _apply_graph_reasoning(
         self,
         prefix: Sequence[str],
         ranked: RankedCandidates,
     ) -> Tuple[RankedCandidates, Dict[str, float], Dict[str, Any]]:
+        """
+        Áp dụng GraphReasoner nếu được bật.
+
+        Returns
+        -------
+        new_ranked:
+            Ứng viên sau khi đã re-rank bằng DFG.
+        new_scores:
+            Dict[label, score] sau re-rank.
+        meta:
+            Thông tin diễn giải.
+        """
         if not (self.cfg.enable_graph_reasoner and self.graph_reasoner is not None and ranked):
             return ranked, {a: s for a, s in ranked}, {"used": False}
 
@@ -88,13 +143,18 @@ class HybridSNAP:
         meta.setdefault("impl", "GraphReasoner")
         return new_ranked, new_scores, meta
 
-    # ---------------------- Semantics-Prior ----------------------
+    # ------------------------------------------------------------------
+    # 3) Semantics-Prior
+    # ------------------------------------------------------------------
     def _apply_semantics_prior(
         self,
         prefix: Sequence[str],
         ranked: RankedCandidates,
         scores: Dict[str, float],
     ) -> Tuple[RankedCandidates, Dict[str, float], Dict[str, Any]]:
+        """
+        Áp dụng SemanticsPrior nếu được bật.
+        """
         if not (self.cfg.enable_semantics_prior and self.sem_prior is not None and ranked):
             return ranked, scores, {"used": False}
 
@@ -109,13 +169,18 @@ class HybridSNAP:
         meta.setdefault("used", True)
         return new_ranked, new_scores, meta
 
-    # ---------------------- Guard (V2: soft penalty trên phân phối) ----------------------
+    # ------------------------------------------------------------------
+    # 4) Guard (V2: soft penalty trên phân phối)
+    # ------------------------------------------------------------------
     def _apply_guard(
         self,
         prefix: Sequence[str],
         ranked: RankedCandidates,
         scores: Dict[str, float],
     ) -> Tuple[RankedCandidates, Dict[str, float], Dict[str, Any]]:
+        """
+        Áp dụng Guard nếu được bật.
+        """
         if not (self.cfg.enable_guard and self.guard is not None and ranked):
             return ranked, scores, {"used": False}
 
@@ -132,12 +197,35 @@ class HybridSNAP:
         meta.setdefault("used", True)
         return new_ranked, new_scores, meta
 
-    # ---------------------- predict_one ----------------------
+    # ------------------------------------------------------------------
+    # 5) API gốc: predict_one (trả dict, dùng cho tests + debug)
+    # ------------------------------------------------------------------
     def predict_one(
         self,
         prefix: Sequence[str],
         activities: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
+        """
+        Chạy full pipeline cho 1 prefix.
+
+        Parameters
+        ----------
+        prefix:
+            Chuỗi activity đã xảy ra.
+        activities:
+            Danh sách toàn bộ activity có thể có.
+            Nếu None → dùng self.activities_vocab.
+
+        Returns
+        -------
+        dict:
+            {
+              "prediction": label cuối cùng (str | None),
+              "candidates": [label1, label2, ...],
+              "scores": {label: score},
+              "meta": {sequence, graph, sem_prior, guard, semantics, explanation}
+            }
+        """
         pref = list(map(str, prefix))
 
         if activities is not None:
@@ -151,6 +239,7 @@ class HybridSNAP:
             "sequence": seq_meta,
         }
         if not ranked_seq:
+            # Không có candidate nào từ SequenceEnsemble → dừng luôn.
             return {
                 "prediction": None,
                 "candidates": [],
@@ -172,7 +261,7 @@ class HybridSNAP:
 
         candidate_labels = [a for a, _ in ranked_guard]
 
-        # 5) Semantics LLM (nếu bật)
+        # 5) Semantics LLM (Block 3: chọn nhãn cuối cùng)
         if self.semantics_llm is not None and all_activities and candidate_labels:
             chosen_label, sem_meta = self.semantics_llm.predict_from_candidates(
                 activities=all_activities,
@@ -182,7 +271,7 @@ class HybridSNAP:
             meta["semantics"] = {
                 "enabled": True,
                 "chosen_label": chosen_label,
-                **sem_meta,
+                **(sem_meta or {}),
             }
         else:
             # fallback: chọn top-1 sau Guard
@@ -190,7 +279,7 @@ class HybridSNAP:
             meta["semantics"] = {
                 "enabled": False,
                 "chosen_label": chosen_label,
-                "reason": "sequence_graph_sem_prior_guard_only_or_missing_vocab",
+                "reason": "sequence_graph_sem_prior_guard_only_or_missing_vocab_or_llm_disabled",
             }
 
         final_label = chosen_label
@@ -214,7 +303,7 @@ class HybridSNAP:
                     chosen_label=final_label,
                 )
                 meta["explanation"] = expl
-            except Exception as exc:  # không crash pipeline vì explain
+            except Exception as exc:  # không để explain làm crash pipeline
                 meta["explanation"] = {
                     "error": str(exc),
                     "prompt_id": None,
@@ -228,7 +317,50 @@ class HybridSNAP:
             "meta": meta,
         }
 
-    # ---------------------- batch_predict ----------------------
+    # ------------------------------------------------------------------
+    # 6) API mới cho eval: predict(...)
+    # ------------------------------------------------------------------
+    def predict(
+        self,
+        prefix: Sequence[str],
+        activities_vocab: Optional[Sequence[str]] = None,
+        measure_cost: bool = False,
+    ) -> Tuple[str, List[str], Dict[str, Any]]:
+        """
+        API mỏng cho evaluation:
+
+        - Được `run_evaluation` gọi.
+        - Trả về (y_pred, ranked_labels, meta).
+
+        Parameters
+        ----------
+        prefix:
+            Chuỗi activity đã xảy ra.
+        activities_vocab:
+            Danh sách activity dùng cho bước SemanticsLLM.
+            Nếu None → dùng self.activities_vocab.
+        measure_cost:
+            Được runner truyền xuống, nhưng ở đây không dùng (latency được đo ở runner).
+
+        Returns
+        -------
+        y_pred:
+            Nhãn cuối cùng (str hoặc None).
+        ranked_labels:
+            Danh sách candidate (top-k) sau toàn bộ pipeline (sequence+graph+sem_prior+guard).
+        meta:
+            Toàn bộ meta như predict_one.
+        """
+        _ = measure_cost  # hiện tại không dùng, để giữ signature
+        res = self.predict_one(prefix=prefix, activities=activities_vocab)
+        y_pred = res.get("prediction")
+        ranked_labels = list(res.get("candidates", []))
+        meta = res.get("meta", {})
+        return y_pred, ranked_labels, meta
+
+    # ------------------------------------------------------------------
+    # 7) batch_predict (giữ lại cho tiện debug / test)
+    # ------------------------------------------------------------------
     def batch_predict(
         self,
         prefixes: List[Sequence[str]],
