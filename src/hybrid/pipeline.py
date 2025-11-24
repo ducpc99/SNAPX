@@ -34,6 +34,11 @@ class HybridConfig:
         Bật / tắt Guard (footprint/anomaly soft penalty).
     enable_explanation:
         Nếu True và có LLM + PromptPool → sinh giải thích bằng generate_explanation().
+    semantics_lambda:
+        Trọng số (>=0) để trộn score SemanticsLLM (logprob) với score sau Guard.
+        - Nếu = 0  → bỏ qua ảnh hưởng của LLM, chỉ dùng sequence + graph + prior + guard.
+        - Nếu > 0 → final_score = score_guard + semantics_lambda * score_llm_norm,
+                    trong đó score_llm_norm ∈ [0, 1] được chuẩn hoá trong top-k.
     """
 
     top_k: int = 5
@@ -41,6 +46,7 @@ class HybridConfig:
     enable_semantics_prior: bool = True
     enable_guard: bool = True
     enable_explanation: bool = False  # bật để sinh giải thích
+    semantics_lambda: float = 0.0
 
 
 class HybridSNAP:
@@ -51,7 +57,7 @@ class HybridSNAP:
     2) GraphReasoner (DFG) → re-rank soft/hard mask.
     3) SemanticsPrior → inject prior ngữ nghĩa từ JSON.
     4) Guard → penalty các candidate bất thường.
-    5) SemanticsLLM → chọn nhãn cuối cùng từ danh sách candidate.
+    5) SemanticsLLM → rerank mềm trên danh sách candidate (nếu semantics_lambda > 0).
     6) (tuỳ chọn) generate_explanation → sinh giải thích.
     """
 
@@ -260,29 +266,71 @@ class HybridSNAP:
         meta["guard"] = guard_meta
 
         candidate_labels = [a for a, _ in ranked_guard]
+        # base scores sau Guard (backbone): sequence + graph + sem_prior + guard
+        combined_scores: Dict[str, float] = {
+            a: scores_guard.get(a, 0.0) for a in candidate_labels
+        }
 
-        # 5) Semantics LLM (Block 3: chọn nhãn cuối cùng)
-        if self.semantics_llm is not None and all_activities and candidate_labels:
-            chosen_label, sem_meta = self.semantics_llm.predict_from_candidates(
+        # 5) Semantics LLM (Block 3: rerank mềm)
+        final_label: Optional[str] = None
+        sem_lambda = getattr(self.cfg, "semantics_lambda", 0.0)
+
+        if (
+            self.semantics_llm is not None
+            and all_activities
+            and candidate_labels
+        ):
+            chosen_label_llm, sem_meta = self.semantics_llm.predict_from_candidates(
                 activities=all_activities,
                 prefix=pref,
                 candidates=candidate_labels,
             )
+
+            cand_logprobs = dict((sem_meta or {}).get("candidate_logprobs") or {})
+            sem_norm: Dict[str, float] = {}
+
+            if cand_logprobs and sem_lambda > 0.0:
+                # Chuẩn hoá logprob về [0, 1] trong top-k để trộn với score_guard.
+                lp_values = list(cand_logprobs.values())
+                lp_min = min(lp_values)
+                lp_max = max(lp_values)
+                if lp_max > lp_min:
+                    for lab, lp in cand_logprobs.items():
+                        sem_norm[lab] = (lp - lp_min) / (lp_max - lp_min)
+                else:
+                    sem_norm = {lab: 0.0 for lab in cand_logprobs.keys()}
+
+                # Cộng score mềm: score_final = score_guard + λ * score_llm_norm
+                for lab in candidate_labels:
+                    base = combined_scores.get(lab, 0.0)
+                    sem_score = sem_norm.get(lab, 0.0)
+                    combined_scores[lab] = base + sem_lambda * sem_score
+
+                # Chọn nhãn cuối cùng theo combined_scores
+                final_label = max(combined_scores.items(), key=lambda x: x[1])[0]
+            else:
+                # Không có logprob hoặc semantics_lambda = 0 → không dùng LLM để rerank,
+                # fallback: chọn top-1 sau Guard (backbone).
+                final_label = candidate_labels[0] if candidate_labels else None
+
             meta["semantics"] = {
                 "enabled": True,
-                "chosen_label": chosen_label,
+                "chosen_label_llm": chosen_label_llm,
+                "final_label": final_label,
+                "semantics_lambda": sem_lambda,
+                "candidate_logprobs": cand_logprobs,
+                "candidate_scores_norm": sem_norm,
                 **(sem_meta or {}),
             }
         else:
-            # fallback: chọn top-1 sau Guard
-            chosen_label = candidate_labels[0] if candidate_labels else None
+            # fallback: không dùng LLM, chọn top-1 sau Guard
+            final_label = candidate_labels[0] if candidate_labels else None
             meta["semantics"] = {
                 "enabled": False,
-                "chosen_label": chosen_label,
+                "final_label": final_label,
+                "semantics_lambda": sem_lambda,
                 "reason": "sequence_graph_sem_prior_guard_only_or_missing_vocab_or_llm_disabled",
             }
-
-        final_label = chosen_label
 
         # 6) Explanation (Block 4: nếu bật)
         if (
@@ -309,7 +357,7 @@ class HybridSNAP:
                     "prompt_id": None,
                 }
 
-        final_scores = {a: scores_guard.get(a, 0.0) for a in candidate_labels}
+        final_scores = combined_scores
         return {
             "prediction": final_label,
             "candidates": candidate_labels,
