@@ -60,13 +60,13 @@ semantics:
     min_prefix_len: 1
 
 semantics_prior:
-  enabled: false
-  mode: pair           # chúng ta build pair prior từ IT
+  enabled: true                  # Bật SemanticsPrior
+  mode: pair                     # Chọn mode pair cho cặp (prev, next) từ IT
   default_weight: 1.0
-  lambda_mix: 0.2
-  floor: 0.7
-  ceil: 1.3
-  prior_map_path: datasets/sem_prior_pairs.json
+  lambda_mix: 0.4                # Tăng ảnh hưởng của SemanticsPrior
+  floor: 0.5                     # Điều chỉnh floor để không quá thấp
+  ceil: 1.5                      # Giảm ceil để giữ prior trong phạm vi hợp lý
+  prior_map_path: datasets/sem_prior_pairs.json  # Đảm bảo đang sử dụng SemanticsPrior từ IT
 
 guard:
   enabled: false
@@ -81,7 +81,7 @@ guard:
 hybrid:
   top_k: 5
   enable_graph_reasoner: true
-  enable_semantics_prior: false
+  enable_semantics_prior: true  # Bật SemanticsPrior cho Hybrid
   enable_guard: false
   enable_explanation: false
 
