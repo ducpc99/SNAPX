@@ -1,61 +1,29 @@
-# scripts/run_local_eval.py
-# -------------------------
-# Chạy toàn bộ pipeline S-NAPX Hybrid ở chế độ local, hỗ trợ gộp nhiều file YAML cấu hình
-# và dùng kiến trúc mới (HybridSNAP + Explain + Cost-Performance + Guard).
-
-from __future__ import annotations
-
 import argparse
 import sys
 import time
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
+import torch
 import yaml
 
-# Cho phép import src.* dù script nằm ngoài thư mục src
+# Kiểm tra sys.path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
-# Kiểm tra sys.path
-print("Current sys.path:", sys.path)
+# Kiểm tra bộ nhớ GPU trước khi chạy
+def check_gpu_memory():
+    if torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info(0)
+        used_mem = total_mem - free_mem
+        print(f"GPU Memory - Free: {free_mem / 1024**3:.2f} GB, Used: {used_mem / 1024**3:.2f} GB, Total: {total_mem / 1024**3:.2f} GB")
+        if used_mem / total_mem > 0.8:  # Giới hạn sử dụng bộ nhớ 80%
+            print("⚠️ Cảnh báo: Bộ nhớ GPU sử dụng quá cao, cân nhắc giảm batch size hoặc sequence length.")
+    else:
+        print("🔴 GPU không khả dụng.")
 
-# Utils config
-from src.utils.config import load_config
-
-# Loader chuẩn (S-NAP, A-SAD, T-SAD + split train/val/test)
-from src.data.loader import load_task_csv
-
-# Core models
-from src.sequence.ensemble import SequenceEnsemble
-from src.graph_reasoning.dfg import DFG
-from src.graph_reasoning.reasoner import GraphReasoner, GraphReasonerConfig
-from src.graph_reasoning.semantics_prior import SemanticsPrior, SemanticsPriorConfig
-from src.semantics.prompt_pool import PromptPool, PromptPoolConfig
-from src.semantics.inference import SemanticsLLM, RuntimeConfig, GenConfig
-from src.hybrid.pipeline import HybridSNAP, HybridConfig
-from src.semantics.instruction_memory import InstructionMemory
-
-# Guard
-from src.guard.config import GuardConfig
-from src.guard.core import Guard
-
-# Eval
-from src.eval.runner import run_evaluation, EvalSample
-
-
-# =========================
-# GPU monitor (tuỳ chọn)
-# =========================
+# Kiểm tra thông tin cấu hình GPU
 def _gpu_snapshot() -> str:
-    """
-    Cố gắng lấy thông tin GPU/VRAM theo thứ tự ưu tiên:
-    1) pynvml (ổn định nhất)
-    2) nvidia-smi (subprocess)
-    3) torch.cuda.mem_get_info (cuối cùng)
-    """
-    # 1) pynvml
     try:
         import pynvml  # type: ignore
 
@@ -70,7 +38,6 @@ def _gpu_snapshot() -> str:
     except Exception:
         pass
 
-    # 2) nvidia-smi
     try:
         import subprocess, shlex
 
@@ -82,26 +49,7 @@ def _gpu_snapshot() -> str:
     except Exception:
         pass
 
-    # 3) torch (free/total)
-    try:
-        import torch  # type: ignore
-
-        if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info()
-            name = torch.cuda.get_device_name(0)
-            used = (total - free) // (1024**2)
-            total_mb = total // (1024**2)
-            return f"{name} | VRAM≈{used}/{total_mb} MiB"
-    except Exception:
-        pass
-
     return "GPU monitor unavailable"
-
-
-def _gpu_monitor_loop(stop_flag, interval_sec: float = 2.0) -> None:
-    while not stop_flag.is_set():
-        print(f"[GPU] {_gpu_snapshot()}")
-        stop_flag.wait(interval_sec)
 
 
 # =========================
@@ -168,47 +116,38 @@ def _print_cfg_summary(cfg: Dict[str, Any]) -> None:
 def main() -> None:
     # Khởi tạo parser cho các tham số dòng lệnh
     parser = argparse.ArgumentParser(description="Run Local Evaluation for S-NAPX Hybrid")
-
+    
     # Tham số cho file cấu hình (có thể truyền nhiều file YAML)
     parser.add_argument(
-        "--config",
-        "-c",
-        type=str,
-        nargs="+",
-        required=True,
-        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)",
+        "--config", "-c",
+        type=str, nargs="+", required=True,
+        help="Đường dẫn tới 1 hoặc nhiều file YAML cấu hình (vd: config/base.yaml config/local_eval.yaml)"
     )
-
+    
     # Tham số để bật chế độ theo dõi GPU/VRAM
     parser.add_argument(
-        "--monitor-gpu",
-        action="store_true",
-        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy",
+        "--monitor-gpu", action="store_true",
+        help="In trạng thái GPU/VRAM mỗi vài giây trong khi chạy"
     )
-
+    
     # Tham số chu kỳ in trạng thái GPU
     parser.add_argument(
-        "--gpu-interval",
-        type=float,
-        default=2.0,
-        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu",
+        "--gpu-interval", type=float, default=2.0,
+        help="Chu kỳ (giây) in trạng thái GPU khi bật --monitor-gpu"
     )
-
+    
     # Tham số để lưu cấu hình đã gộp vào thư mục output
     parser.add_argument(
-        "--save-merged-cfg",
-        action="store_true",
-        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm",
+        "--save-merged-cfg", action="store_true",
+        help="Lưu bản config đã merge vào thư mục output để tái lập thí nghiệm"
     )
-
+    
     # Tham số đường dẫn tới file phân chia train/val/test
     parser.add_argument(
-        "--split-file",
-        type=str,
-        required=True,
-        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)",
+        "--split-file", type=str, required=True,
+        help="Đường dẫn tới file phân chia train/val/test (ví dụ: datasets/snap_train_val_test.pkl)"
     )
-
+    
     # Phân tích các tham số dòng lệnh
     args = parser.parse_args()
 
@@ -217,11 +156,6 @@ def main() -> None:
 
     # 1) Load & merge các file YAML cấu hình
     cfg = load_config(cfg_paths)
-
-    # Ghi đè dataset.split_file bằng CLI --split-file để đảm bảo dùng đúng file pkl
-    if "dataset" not in cfg or cfg["dataset"] is None:
-        cfg["dataset"] = {}
-    cfg["dataset"]["split_file"] = args.split_file
 
     # 2) Chuẩn bị thư mục output
     paths_cfg = cfg.get("paths", {})
@@ -232,10 +166,10 @@ def main() -> None:
 
     # In thông báo bắt đầu chạy mô hình
     print("\n🚀  Bắt đầu chạy S-NAPX Hybrid (Local Mode)...\n")
-
+    
     # In ra cấu hình tóm tắt (để kiểm tra trước khi chạy)
     _print_cfg_summary(cfg)
-
+    
     # Lưu bản cấu hình đã gộp nếu tham số --save-merged-cfg được bật
     if args.save_merged_cfg:
         merged_cfg_path = out_dir / "run_config_merged.yaml"
