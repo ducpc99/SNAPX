@@ -105,12 +105,15 @@ class PromptPool:
                 id="snap_predict_strict_v1",
                 task="snap_predict",  # kiểu logic riêng cho SemanticsLLM
                 variant_group="snap_predict",
-                description="Chọn chính xác 1 activity tiếp theo từ CANDIDATE list (S-NAP).",
+                description=(
+                    "Chọn chính xác 1 activity tiếp theo từ CANDIDATE list (S-NAP). "
+                    "Prompt ngắn, chỉ dùng prefix và danh sách ứng viên top-k."
+                ),
                 template=(
                     "You are an advanced AI system specialized in solving process mining tasks.\n"
                     "We have a partial execution trace of activities from a business process.\n"
                     "From the provided CANDIDATE list, which single activity should come next?\n\n"
-                    "All process activities: {activities}\n"
+                    # ⚠️ ĐÃ BỎ: 'All process activities: {activities}\\n'
                     "Candidate next activities (top-k): {candidates}\n"
                     "So far executed (prefix): {prefix}\n\n"
                     "Answer with exactly ONE activity name from the CANDIDATE list and nothing else.\n"
@@ -125,11 +128,14 @@ class PromptPool:
                 id="snap_explain_reasonable_v1",
                 task="snap_explain",
                 variant_group="snap_explain",
-                description="Giải thích ≤ 2 câu vì sao chosen_label là hợp lý.",
+                description=(
+                    "Giải thích ≤ 2 câu vì sao chosen_label là hợp lý, "
+                    "dựa trên prefix và danh sách ứng viên top-k."
+                ),
                 template=(
                     "You are an advanced AI system specialized in solving process mining tasks.\n"
                     "A model has predicted the next activity for an ongoing process execution.\n\n"
-                    "All process activities: {activities}\n"
+                    # ⚠️ ĐÃ BỎ: 'All process activities: {activities}\\n'
                     "Candidate next activities (top-k): {candidates}\n"
                     "So far executed (prefix): {prefix}\n"
                     "Predicted next activity: {chosen_label}\n\n"
