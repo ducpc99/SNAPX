@@ -358,54 +358,102 @@ class SemanticsLLM:
     # ------------------------------------------------------------------
     # Mode logprob: chấm điểm từng candidate
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Mode logprob: chấm điểm từng candidate
+    # ------------------------------------------------------------------
     def _score_candidates_logprob(
         self,
         prompt: str,
         candidates: Sequence[str],
     ) -> Dict[str, float]:
         """
-        Tính log-xác suất P(candidate | prompt) xấp xỉ cho từng candidate.
+        Tính log-xác suất xấp xỉ P(candidate | prompt) cho từng candidate.
+
+        Thiết kế mới:
+        -------------
+        - Vector hóa toàn bộ candidates trong 1 batch (nhanh hơn).
+        - Sử dụng logprob TRUNG BÌNH trên mỗi token của candidate
+          (giảm bias ưu tiên nhãn ngắn).
         """
         if F is None:
             raise RuntimeError("torch.nn.functional (F) không khả dụng.")
 
+        if not candidates:
+            return {}
+
+        # 1) Tokenize prompt một lần
+        prompt_ids: List[int] = self.tokenizer.encode(
+            prompt,
+            add_special_tokens=False,
+        )
+
+        # 2) Tokenize từng candidate
+        cand_token_ids: List[List[int]] = []
+        for cand in candidates:
+            # thêm 1 space phía trước để tách từ tốt hơn
+            ids = self.tokenizer.encode(" " + cand, add_special_tokens=False)
+            cand_token_ids.append(ids)
+
+        max_len_seq = self.runtime_cfg.max_seq_len
+
+        # 3) Tạo chuỗi token (prompt + candidate), có cắt theo max_seq_len
+        seq_token_ids: List[List[int]] = []
+        for ids in cand_token_ids:
+            full = prompt_ids + ids
+            if len(full) > max_len_seq:
+                # cắt từ bên trái để giữ lại phần cuối (gần candidate) – giống bản cũ
+                full = full[-max_len_seq:]
+            seq_token_ids.append(full)
+
+        # 4) Padding thành batch tensor
+        batch_size = len(candidates)
+        max_len_batch = max(len(seq) for seq in seq_token_ids)
+        pad_id = self.tokenizer.pad_token_id or 0
+
+        input_ids = torch.full(
+            (batch_size, max_len_batch),
+            fill_value=pad_id,
+            dtype=torch.long,
+            device=self.device,
+        )
+        attention_mask = torch.zeros_like(input_ids)
+
+        for i, seq in enumerate(seq_token_ids):
+            seq_len = len(seq)
+            input_ids[i, -seq_len:] = torch.tensor(seq, dtype=torch.long, device=self.device)
+            attention_mask[i, -seq_len:] = 1
+
+        # 5) Forward 1 lần cho cả batch
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits  # [B, L, V]
+
+        log_probs = F.log_softmax(logits, dim=-1)  # [B, L, V]
+
         scores: Dict[str, float] = {}
 
-        for cand in candidates:
-            prompt_ids = self.tokenizer.encode(
-                prompt,
-                add_special_tokens=False,
-            )
-            cand_ids = self.tokenizer.encode(
-                " " + cand,
-                add_special_tokens=False,
-            )
+        for i, cand in enumerate(candidates):
+            seq_len = int(attention_mask[i].sum().item())
+            if seq_len <= 1:
+                scores[cand] = -math.inf
+                continue
 
-            token_ids = prompt_ids + cand_ids
+            # Logprob cho từng token thực (bỏ token đầu tiên)
+            lp_tokens = log_probs[i, : seq_len - 1, :]          # [L-1, V]
+            tgt_ids = input_ids[i, 1:seq_len]                   # [L-1]
+            token_lp = lp_tokens.gather(1, tgt_ids.unsqueeze(-1)).squeeze(-1)  # [L-1]
 
-            max_len = self.runtime_cfg.max_seq_len
-            if len(token_ids) > max_len:
-                token_ids = token_ids[-max_len:]
-
-            full_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
-
-            with torch.no_grad():
-                outputs = self.model(input_ids=full_ids)
-                logits = outputs.logits  # [1, L, V]
-
-            log_probs = F.log_softmax(logits, dim=-1)  # [1, L, V]
-            log_probs_tokens = log_probs[:, :-1, :]  # [1, L-1, V]
-            target_ids = full_ids[:, 1:]  # [1, L-1]
-            token_logprobs = log_probs_tokens.gather(
-                2, target_ids.unsqueeze(-1)
-            ).squeeze(-1)[0]  # [L-1]
-
-            cand_len = min(len(cand_ids), token_logprobs.size(0))
+            cand_len = len(cand_token_ids[i])
+            cand_len = min(cand_len, token_lp.size(0))
             if cand_len == 0:
                 scores[cand] = -math.inf
                 continue
-            cand_logprob = float(token_logprobs[-cand_len:].sum().item())
-            scores[cand] = cand_logprob
+
+            # Lấy cand_len token cuối cùng (tương ứng candidate) và LẤY TRUNG BÌNH
+            cand_lp_tokens = token_lp[-cand_len:]
+            cand_lp_mean = float(cand_lp_tokens.mean().item())  # length-normalized
+
+            scores[cand] = cand_lp_mean
 
         return scores
 
